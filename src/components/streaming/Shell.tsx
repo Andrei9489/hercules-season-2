@@ -26,6 +26,8 @@ import { NewsView } from "./NewsView";
 import { FunView } from "./FunView";
 import { MyListView } from "./MyListView";
 import { SearchView } from "./SearchView";
+import { UniversuriView } from "./UniversuriView";
+import { ShowbizView } from "./ShowbizView";
 import { DetailModal } from "./DetailModal";
 import { PlayerModal } from "./PlayerModal";
 
@@ -45,30 +47,31 @@ const NAV: { key: ViewKey; label: string; icon: typeof Home; group: string }[] =
   { key: "lista", label: "Lista Mea", icon: Bookmark, group: "Cont" },
 ];
 
-// Meniuri vizuale (fără funcții încă — se dezvoltă pas cu pas)
-type SoonItem = { label: string; icon: string; group: string };
-const NAV_SOON: SoonItem[] = [
-  { label: "Marvel", icon: "🦸", group: "Universuri" },
-  { label: "DC", icon: "🦇", group: "Universuri" },
-  { label: "Blockbustere", icon: "💥", group: "Universuri" },
-  { label: "Disney", icon: "🏰", group: "Canale Kids" },
-  { label: "Jetix", icon: "⚡", group: "Canale Kids" },
-  { label: "Fox Kids", icon: "🦊", group: "Canale Kids" },
-  { label: "Cartoon Network", icon: "📺", group: "Canale Kids" },
-  { label: "Boomerang", icon: "🪃", group: "Canale Kids" },
-  { label: "Minimax", icon: "🎈", group: "Canale Kids" },
-  { label: "Divertisment", icon: "🎭", group: "TV & Show-biz" },
-  { label: "Show-biz", icon: "⭐", group: "TV & Show-biz" },
-  { label: "Reality TV", icon: "🎤", group: "TV & Show-biz" },
-  { label: "Emisiuni TV", icon: "🎙️", group: "TV & Show-biz" },
-  { label: "Europa", icon: "🇪🇺", group: "Lumea — 196 țări" },
-  { label: "America de Nord", icon: "🌎", group: "Lumea — 196 țări" },
-  { label: "America de Sud", icon: "🌏", group: "Lumea — 196 țări" },
-  { label: "Asia", icon: "🏯", group: "Lumea — 196 țări" },
-  { label: "Africa", icon: "🌍", group: "Lumea — 196 țări" },
-  { label: "Oceania", icon: "🏝️", group: "Lumea — 196 țări" },
+// Faza 4: meniuri COMPLET FUNCȚIONALE — fiecare item navighează la view + parametru
+// (înainte erau „CURÂND” — acum activ: Universuri, Canale Kids, TV & Show-biz, Lumea)
+type ExtraItem = { label: string; icon: string; group: string; view: ViewKey; param: string };
+const NAV_EXTRA: ExtraItem[] = [
+  { label: "Marvel", icon: "🦸", group: "Universuri", view: "universuri", param: "marvel" },
+  { label: "DC", icon: "🦇", group: "Universuri", view: "universuri", param: "dc" },
+  { label: "Blockbustere", icon: "💥", group: "Universuri", view: "universuri", param: "blockbuster" },
+  { label: "Disney", icon: "🏰", group: "Canale Kids", view: "copii", param: "disney" },
+  { label: "Jetix", icon: "⚡", group: "Canale Kids", view: "copii", param: "jetix" },
+  { label: "Fox Kids", icon: "🦊", group: "Canale Kids", view: "copii", param: "fox-kids" },
+  { label: "Cartoon Network", icon: "📺", group: "Canale Kids", view: "copii", param: "cartoon-network" },
+  { label: "Boomerang", icon: "🪃", group: "Canale Kids", view: "copii", param: "boomerang" },
+  { label: "Minimax", icon: "🎈", group: "Canale Kids", view: "copii", param: "minimax" },
+  { label: "Divertisment", icon: "🎭", group: "TV & Show-biz", view: "showbiz", param: "divertisment" },
+  { label: "Show-biz", icon: "⭐", group: "TV & Show-biz", view: "showbiz", param: "showbiz" },
+  { label: "Reality TV", icon: "🎤", group: "TV & Show-biz", view: "showbiz", param: "reality" },
+  { label: "Emisiuni TV", icon: "🎙️", group: "TV & Show-biz", view: "showbiz", param: "emisiuni" },
+  { label: "Europa", icon: "🇪🇺", group: "Lumea — 196 țări", view: "stiri", param: "Europa" },
+  { label: "America de Nord", icon: "🌎", group: "Lumea — 196 țări", view: "stiri", param: "America de Nord" },
+  { label: "America de Sud", icon: "🌏", group: "Lumea — 196 țări", view: "stiri", param: "America de Sud" },
+  { label: "Asia", icon: "🏯", group: "Lumea — 196 țări", view: "stiri", param: "Asia" },
+  { label: "Africa", icon: "🌍", group: "Lumea — 196 țări", view: "stiri", param: "Africa" },
+  { label: "Oceania", icon: "🏝️", group: "Lumea — 196 țări", view: "stiri", param: "Oceania" },
 ];
-const SOON_GROUPS = Array.from(new Set(NAV_SOON.map((n) => n.group)));
+const EXTRA_GROUPS = Array.from(new Set(NAV_EXTRA.map((n) => n.group)));
 
 type Profile = { id: string; name: string; avatar: string; color: string; isKid: boolean };
 
@@ -79,6 +82,11 @@ export function Shell() {
 
   const [view, setView] = useState<ViewKey>("acasa");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Faza 4: parametri pentru meniurile avansate (tab/brand/continent)
+  const [universuriTab, setUniversuriTab] = useState("marvel");
+  const [showbizTab, setShowbizTab] = useState("divertisment");
+  const [kidsBrand, setKidsBrand] = useState("disney");
+  const [newsContinent, setNewsContinent] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchInput, setSearchInput] = useState("");
   // Faza 3: autocompletare live din Neon (suggest API)
@@ -189,6 +197,17 @@ export function Shell() {
     window.scrollTo({ top: 0 });
   }, []);
 
+  // Faza 4: navigare din meniurile avansate — setează parametrul view-ului țintă
+  const navigateExtra = useCallback((item: ExtraItem) => {
+    if (item.view === "universuri") setUniversuriTab(item.param);
+    else if (item.view === "showbiz") setShowbizTab(item.param);
+    else if (item.view === "copii") setKidsBrand(item.param);
+    else if (item.view === "stiri") setNewsContinent(item.param);
+    setView(item.view);
+    setSidebarOpen(false);
+    window.scrollTo({ top: 0 });
+  }, []);
+
   // autocompletare live: debounce 180ms → /api/search?mode=suggest (Neon)
   // q gol → trending din search_stats (upsert_search_stat)
   useEffect(() => {
@@ -280,23 +299,31 @@ export function Shell() {
           </div>
         ))}
 
-        {SOON_GROUPS.map((g) => (
+        {EXTRA_GROUPS.map((g) => (
           <div key={g}>
             <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-700">{g}</p>
-            {NAV_SOON.filter((n) => n.group === g).map((n) => (
-              <div
-                key={n.label}
-                aria-disabled="true"
-                title="În curând — se dezvoltă pas cu pas"
-                className="mb-0.5 flex cursor-default select-none items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-zinc-600"
-              >
-                <span className="w-4 shrink-0 text-center text-base leading-none">{n.icon}</span>
-                <span className="flex-1 truncate">{n.label}</span>
-                <span className="rounded-full bg-zinc-900 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-zinc-600 ring-1 ring-zinc-800">
-                  curând
-                </span>
-              </div>
-            ))}
+            {NAV_EXTRA.filter((n) => n.group === g).map((n) => {
+              const active = view === n.view &&
+                (n.view === "universuri" ? universuriTab === n.param
+                  : n.view === "showbiz" ? showbizTab === n.param
+                  : n.view === "copii" ? kidsBrand === n.param
+                  : newsContinent === n.param);
+              return (
+                <button
+                  key={n.label}
+                  onClick={() => navigateExtra(n)}
+                  title={`Deschide ${n.label}`}
+                  className={`mb-0.5 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                    active
+                      ? "bg-red-600/15 text-red-400 ring-1 ring-red-600/30"
+                      : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
+                  }`}
+                >
+                  <span className="w-4 shrink-0 text-center text-base leading-none">{n.icon}</span>
+                  <span className="flex-1 truncate">{n.label}</span>
+                </button>
+              );
+            })}
           </div>
         ))}
       </nav>
@@ -525,12 +552,18 @@ export function Shell() {
         )}
         {view === "muzica" && <MusicView />}
         {view === "copii" && (
-          <KidsView onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+          <KidsView key={`kids-${kidsBrand}`} initialBrand={kidsBrand} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
         )}
         {view === "sport" && <SportsView />}
         {view === "gaming" && <GamingView />}
-        {view === "stiri" && <NewsView />}
+        {view === "stiri" && <NewsView key={`stiri-${newsContinent}`} initialContinent={newsContinent} />}
         {view === "fun" && <FunView />}
+        {view === "universuri" && (
+          <UniversuriView key={`uni-${universuriTab}`} initialTab={universuriTab} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+        )}
+        {view === "showbiz" && (
+          <ShowbizView key={`sb-${showbizTab}`} initialTab={showbizTab} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+        )}
         {view === "lista" && (
           <MyListView
             authed={authedStable}

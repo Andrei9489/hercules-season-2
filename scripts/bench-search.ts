@@ -128,6 +128,8 @@ async function main() {
   await bench("B: căutare 150x", (i) => `/api/search?${sp(pick(i))}`, 900, 150);
   await bench("C: canale TV 50x", (i) => `/api/channels?q=${encodeURIComponent(channelQs[i % channelQs.length])}&limit=48`, 200, 50);
   await bench("D: suggest 150x", (i) => `/api/search?mode=suggest&q=${encodeURIComponent(pick(i).slice(0, 4))}`, 300, 150);
+  // Faza 4: stres la 300 concurenți — validează L1+L2 distribuit sub vârf
+  await bench("E: căutare 300x", (i) => `/api/search?${sp(pick(i))}`, 1200, 300);
 
   console.log("\n" + "=".repeat(58));
   console.log("REZUMAT (necesar interpretării: 1 instanță dev pe sandbox):");

@@ -169,6 +169,19 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    if (mode === "blockbuster") {
+      // Blockbustere globale: cele mai populare filme cu voturi masive
+      const data = await tmdb<{ results: Record<string, unknown>[] }>(`/discover/movie`, {
+        sort_by: "popularity.desc",
+        "vote_count.gte": "2000",
+        "primary_release_date.gte": "1980",
+        page,
+      });
+      return NextResponse.json({
+        items: data.results.map((r) => mapTmdbItem(r, "movie")),
+      });
+    }
+
     if (mode === "telenovela") {
       const tasks: Promise<MediaItem[]>[] = [
         tmdb<{ results: Record<string, unknown>[] }>(`/discover/tv`, {

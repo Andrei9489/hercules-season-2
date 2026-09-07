@@ -7,6 +7,7 @@ import { api } from "./api";
 import { MediaCard } from "./MediaCard";
 
 type Props = {
+  initialBrand?: string;
   onPlay: (i: MediaItem) => void;
   onOpen: (i: MediaItem) => void;
   isSaved: (i: MediaItem, k: "watchlist" | "favorites") => boolean;
@@ -30,8 +31,10 @@ type BrandResponse = {
   items: MediaItem[];
 };
 
-export function KidsView({ onPlay, onOpen, isSaved, onToggleList }: Props) {
-  const [brand, setBrand] = useState("disney");
+export function KidsView({ initialBrand, onPlay, onOpen, isSaved, onToggleList }: Props) {
+  const [brand, setBrand] = useState(
+    BRAND_TABS.some((b) => b.key === initialBrand) ? (initialBrand as string) : "disney"
+  );
   const [data, setData] = useState<{ brand: string; items: MediaItem[] } | null>(null);
   const loading = !data || data.brand !== brand;
 

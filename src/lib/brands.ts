@@ -151,6 +151,7 @@ export const TMDB_GENRES: Record<string, { movie: number; tv: number; label: str
   aventura: { movie: 12, tv: 10759, label: "Aventură" },
   crima: { movie: 80, tv: 80, label: "Crimă" },
   reality: { movie: 0, tv: 10764, label: "Reality" },
+  talk: { movie: 0, tv: 10767, label: "Talk" },
   stiri: { movie: 0, tv: 10763, label: "Știri" },
   telenovela: { movie: 0, tv: 207232, label: "Telenovelă" },
 };

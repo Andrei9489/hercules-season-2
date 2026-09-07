@@ -1,8 +1,9 @@
 // ============================================================
-// Motor de căutare StreamVerse — strat Neon (Faza 1)
+// Motor de căutare StreamVerse — strat Neon (Faza 4)
 // Arhitectură: FTS (tsvector GIN) + trigram (pg_trgm GIN) pe tabel
-// partiționat HASH x16, ranking hibrid, cache LRU la cald, logging
-// asincron în search_logs + search_stats.
+// partiționat HASH x16, ranking hibrid, cache L2 DISTRIBUIT în Neon
+// (partajat cross-instance) + cache LRU la cald, logging asincron
+// în search_logs + search_stats.
 // Țintă finală: 30 miliarde itemi • 10.000 căutări simultane.
 // ============================================================
 import { q, qOne } from "./pg";
@@ -42,7 +43,45 @@ export type LibraryHit = {
   score: number;
 };
 
-// ---------- Cache LRU la cald (protecție Neon la vârfuri) ----------
+// ---------- Cache L2 DISTRIBUIT în Neon (Faza 4) ----------
+// L1 = memorie per-instanță (implicit, sub-ms) → L2 = tabel Neon shared
+// (~15-40ms, partajat între TOATE instanțele) → origin (FTS+trigram).
+// La scale orizontal (N instanțe) hit-rate-ul L2 crește proporțional —
+// load pe compute-ul Neon scade cu numărul de instanțe.
+const L2_TTL_SEC = 90;
+
+async function l2Get(key: string): Promise<LibraryHit[] | null> {
+  try {
+    const rows = await q<{ payload: unknown }>(
+      `SELECT payload FROM search_cache
+       WHERE key = $1 AND created_at > now() - ($2 || ' seconds')::interval`,
+      [key, String(L2_TTL_SEC)]
+    );
+    if (!rows[0]) return null;
+    return (rows[0].payload as LibraryHit[]).map((h) => ({ ...h }));
+  } catch {
+    return null; // L2 e optim — o eroare NU blochează căutarea
+  }
+}
+
+async function l2Set(key: string, data: LibraryHit[]): Promise<void> {
+  try {
+    await q(
+      `INSERT INTO search_cache (key, payload) VALUES ($1, $2::jsonb)
+       ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, created_at = now()`,
+      [key, JSON.stringify(data)]
+    );
+  } catch { /* optim — ignoră */ }
+}
+
+// cleanup probabilistic: 2% din scrieri declanșează ștergerea intrărilor expirate
+function l2CleanupMaybe(): void {
+  if (Math.random() > 0.02) return;
+  q(`DELETE FROM search_cache WHERE created_at < now() - interval '10 minutes'`)
+    .catch(() => { /* optim */ });
+}
+
+// ---------- Cache LRU la cald L1 (protecție Neon la vârfuri) ----------
 // Faza 2: TTL mai lung + cache mai mare + coalescing cereri identice.
 type CacheEntry = { exp: number; data: LibraryHit[] };
 const RESULT_TTL_MS = 120_000;
@@ -73,12 +112,13 @@ function cacheSet(key: string, data: LibraryHit[]): void {
   searchCache.set(key, { exp: Date.now() + RESULT_TTL_MS, data });
 }
 
-/** Invalidare la adăugarea de conținut nou. */
+/** Invalidare la adăugarea de conținut nou (L1 + L2 distribuit). */
 export function invalidateSearchCache(prefix?: string): void {
   if (!prefix) {
     searchCache.clear();
     inFlight.clear();
     sugCache.clear();
+    q(`DELETE FROM search_cache`).catch(() => { /* optim */ });
     return;
   }
   for (const k of searchCache.keys()) {
@@ -86,6 +126,10 @@ export function invalidateSearchCache(prefix?: string): void {
   }
   for (const k of sugCache.keys()) {
     if (k.startsWith("sug:")) sugCache.delete(k);
+  }
+  if (prefix.startsWith("sl:")) {
+    // L2: șterge doar cache-urile de căutare (PK range scan, ieftin)
+    q(`DELETE FROM search_cache WHERE key LIKE 'sl:%'`).catch(() => { /* optim */ });
   }
 }
 
@@ -123,6 +167,13 @@ export async function searchLibrary(
   const cacheKey = `sl:${norm}:${limit}:${offset}:${type || "*"}:${brand || "*"}`;
   const cached = cacheGet(cacheKey);
   if (cached) return { hits: cached, tookMs: Date.now() - t0, cached: true, totalIndexed: 0 };
+
+  // Faza 4: L2 distribuit în Neon (partajat cross-instance)
+  const l2 = await l2Get(cacheKey);
+  if (l2) {
+    cacheSet(cacheKey, l2); // promovează în L1 pentru cererile următoare
+    return { hits: l2, tookMs: Date.now() - t0, cached: true, totalIndexed: 0 };
+  }
 
   // coalescing: dacă o cerere identică e deja în zbor, așteptăm-o
   const pending = inFlight.get(cacheKey);
@@ -182,6 +233,7 @@ export async function searchLibrary(
   const rows = await q<Record<string, unknown>>(sql, params);
   const hits = rows.map(mapHit);
   cacheSet(cacheKey, hits);
+  void l2Set(cacheKey, hits).then(() => l2CleanupMaybe()); // L2 write-behind
   return hits;
   })();
 

@@ -49,7 +49,7 @@ type ChannelsData = {
 
 const PAGE = 48;
 
-export function NewsView() {
+export function NewsView({ initialContinent }: { initialContinent?: string }) {
   const [tab, setTab] = useState<"rss" | "live">("live");
 
   return (
@@ -75,7 +75,7 @@ export function NewsView() {
         </button>
       </div>
 
-      {tab === "rss" ? <RssFeeds /> : <LiveTV />}
+      {tab === "rss" ? <RssFeeds /> : <LiveTV initialContinent={initialContinent} />}
     </div>
   );
 }
@@ -146,10 +146,15 @@ function RssFeeds() {
 }
 
 // ================= TV LIVE (Neon) =================
-function LiveTV() {
+const CONTINENTS = ["Europa", "America de Nord", "America de Sud", "Asia", "Africa", "Oceania"];
+
+function LiveTV({ initialContinent }: { initialContinent?: string }) {
   const [qText, setQText] = useState("");
   const [qDebounced, setQDebounced] = useState("");
   const [country, setCountry] = useState("");
+  const [continent, setContinent] = useState(
+    CONTINENTS.includes(initialContinent || "") ? (initialContinent as string) : ""
+  );
   const [data, setData] = useState<ChannelsData | null>(null);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const [items, setItems] = useState<Channel[]>([]);
@@ -161,7 +166,7 @@ function LiveTV() {
     return () => clearTimeout(t);
   }, [qText]);
 
-  const reqKey = `${qDebounced}|${country}`;
+  const reqKey = `${qDebounced}|${country}|${continent}`;
   const loading = loadedKey !== reqKey;
 
   useEffect(() => {
@@ -169,6 +174,7 @@ function LiveTV() {
     const qs = new URLSearchParams({ limit: String(PAGE), offset: "0" });
     if (qDebounced) qs.set("q", qDebounced);
     if (country) qs.set("country", country);
+    if (continent) qs.set("continent", continent);
     api.channels<ChannelsData>(qs.toString())
       .then((d) => {
         if (seq !== reqSeq.current) return;
@@ -182,7 +188,7 @@ function LiveTV() {
         setItems([]);
         setLoadedKey(reqKey);
       });
-  }, [qDebounced, country]);
+  }, [qDebounced, country, continent]);
 
   const loadMore = () => {
     if (!data) return;
@@ -190,13 +196,14 @@ function LiveTV() {
     const qs = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
     if (qDebounced) qs.set("q", qDebounced);
     if (country) qs.set("country", country);
+    if (continent) qs.set("continent", continent);
     api.channels<ChannelsData>(qs.toString())
       .then((d) => setItems((prev) => [...prev, ...d.items]))
       .catch(() => {});
   };
 
   const facets = data?.countries || [];
-  const total = data ? (qDebounced || country ? data.filteredTotal : data.total) : 0;
+  const total = data ? (qDebounced || country || continent ? data.filteredTotal : data.total) : 0;
 
   return (
     <>
@@ -204,6 +211,29 @@ function LiveTV() {
         🛰️ <b className="text-zinc-300">{total}</b> {total === 1 ? "canal TV live de știri" : "canale TV live de știri"} din {facets.length || "—"} țări,
         indexate în <b className="text-zinc-300">Neon Cloud</b> și căutabile global. Sursă: playlist Popular News.
       </p>
+
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-[10px] font-bold uppercase tracking-widest text-zinc-600">🌍 Lumea</span>
+        <button
+          onClick={() => { setContinent(""); setCountry(""); }}
+          className={`rounded-full px-3 py-1 text-[11px] font-bold transition ${
+            !continent ? "bg-red-600 text-white" : "bg-zinc-900 text-zinc-400 ring-1 ring-zinc-800 hover:bg-zinc-800"
+          }`}
+        >
+          Toate
+        </button>
+        {CONTINENTS.map((c) => (
+          <button
+            key={c}
+            onClick={() => { setContinent(continent === c ? "" : c); }}
+            className={`rounded-full px-3 py-1 text-[11px] font-bold transition ${
+              continent === c ? "bg-red-600 text-white" : "bg-zinc-900 text-zinc-400 ring-1 ring-zinc-800 hover:bg-zinc-800"
+            }`}
+          >
+            {c}
+          </button>
+        ))}
+      </div>
 
       <div className="mb-4 flex flex-col gap-2 sm:flex-row">
         <div className="relative flex-1">

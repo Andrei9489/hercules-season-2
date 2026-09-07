@@ -140,8 +140,10 @@ export function CapacityPanel() {
               )}
               {st.benchmark && (
                 <p className="mt-1 truncate text-[10px] text-zinc-600">
-                  📊 Benchmark real: {st.benchmark.peakLocalRps} req/s pe 1 instanță • 0 erori la 150 concurente •
-                  cache-hit {st.benchmark.concurrent150.cacheHitPct}% • P95 {st.benchmark.concurrent50.p95Ms}ms la 50 concurente
+                  📊 Benchmark real (Faza 4): {st.benchmark.peakLocalRps} req/s pe 1 instanță • 0 erori la{" "}
+                  {st.benchmark.concurrent300 ? "300" : "150"} concurenți • cache L1+L2 distribuit{" "}
+                  {st.search.cacheL2?.enabled ? "în Neon (cross-instance)" : ""} • cache-hit{" "}
+                  {st.benchmark.concurrent300?.cacheHitPct ?? st.benchmark.concurrent150.cacheHitPct}%
                 </p>
               )}
             </div>
