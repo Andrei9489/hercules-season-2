@@ -13,6 +13,53 @@ export type MediaItem = {
   episodes?: number | null;
   genres?: string[];
   extra?: Record<string, unknown>;
+  // câmpuri bibliotecă Neon (redare universală)
+  sourceUrl?: string | null;
+  embedCode?: string | null;
+  provider?: string | null;
+  neonId?: number | null;
+};
+
+// Item din biblioteca Neon (redare din URL/embed extern)
+export type LibraryItem = {
+  id: number;
+  externalId: string;
+  title: string;
+  originalTitle?: string | null;
+  description: string;
+  contentType: string;
+  brand: string | null;
+  category: string | null;
+  continent: string | null;
+  country: string | null;
+  provider: string;
+  sourceType: string;
+  sourceUrl: string | null;
+  embedCode: string | null;
+  thumbnail: string | null;
+  backdrop: string | null;
+  year: number | null;
+  rating: number;
+  popularity: number;
+  views: number;
+};
+
+export type CapacityStatus = {
+  ok: boolean;
+  db: {
+    provider: string; region: string; size: string;
+    partitions: number; indexes: number; stateless: boolean; zeroLocal: boolean;
+  };
+  library: { items: number; types: number; providers: number };
+  search: {
+    logsTotal: number; logs24h: number; avgMs: number | null;
+    top: { original: string; hits: number }[];
+  };
+  capacity: {
+    engine: { pct: number; validatedRows: number; target: number; phase: number; nextSteps: string[] };
+    concurrentSearches: { pct: number; now: number; target: number; mechanisms: string[] };
+    concurrentUsers: { pct: number; now: number; target: number; mechanisms: string[] };
+  };
 };
 
 export type UserItem = {

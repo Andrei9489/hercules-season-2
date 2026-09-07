@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Pause, Play } from "lucide-react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import type { MediaItem } from "./types";
 import { api } from "./api";
+import { UniversalPlayer } from "./UniversalPlayer";
+import { resolveSource } from "@/lib/source-resolver";
 
 type Props = {
   item: MediaItem | null;
@@ -13,7 +15,11 @@ type Props = {
   authed: boolean;
 };
 
-// Player YouTube — redă trailerul oficial / videoclipul muzical
+/**
+ * Player modal — folosește UniversalPlayer pentru orice sursă
+ * (URL extern: YouTube/Vimeo/Dailymotion/ok.ru/Rumble/HLS/MP4/embed/iframe/JS),
+ * cu fallback pe trailerul oficial YouTube pentru metadate TMDB/Jikan.
+ */
 export function PlayerModal({ item, open, onClose, authed }: Props) {
   const [trailerKey, setTrailerKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -23,15 +29,26 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
   const startedAt = useRef<number>(0);
   const saveTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // sursă directă (bibliotecă Neon: URL sau embed)
+  const universalSource = useMemo(() => {
+    if (!item) return null;
+    const raw = (item as { sourceUrl?: string | null }).sourceUrl || (item as { embedCode?: string | null }).embedCode;
+    if (!raw) return null;
+    return resolveSource(raw, { parent: typeof window !== "undefined" ? window.location.hostname : "" });
+  }, [item]);
+
   useEffect(() => {
     if (!open || !item) return;
     setTrailerKey(null);
     setError(null);
     setElapsed(0);
+    setPlaying(true);
     startedAt.current = Date.now();
 
     (async () => {
-      // deja avem cheia (music/video)
+      // redare directă din sursă externă — nu mai căutăm trailer
+      if ((item as { sourceUrl?: string | null }).sourceUrl || (item as { embedCode?: string | null }).embedCode) return;
+
       if (item.trailerKey) {
         setTrailerKey(item.trailerKey);
         return;
@@ -56,7 +73,6 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
       }
     })();
 
-    // salvează progresul la 5 secunde
     saveTimer.current = setInterval(() => {
       setElapsed((e) => e + 1);
     }, 1000);
@@ -91,10 +107,16 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
   if (!item) return null;
 
   const isMusic = item.mediaType === "music" || item.mediaType === "video";
+  const playKind = universalSource
+    ? universalSource.kind === "html" ? "cod embed" :
+      universalSource.kind === "hls" ? "stream HLS" :
+      universalSource.kind === "video" ? "fișier direct" : "sursă externă"
+    : null;
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent aria-describedby={undefined} className="max-w-4xl bg-black border-zinc-800 p-0 gap-0 overflow-hidden">
+        <DialogTitle className="sr-only">{item.title}</DialogTitle>
         <div className="relative aspect-video w-full bg-black">
           {loading && (
             <div className="absolute inset-0 flex items-center justify-center">
@@ -102,7 +124,19 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
             </div>
           )}
 
-          {trailerKey && (
+          {/* REDARE UNIVERSALĂ — orice sursă externă */}
+          {universalSource && (
+            <div className="absolute inset-0">
+              <UniversalPlayer
+                source={universalSource}
+                title={item.title}
+                contentId={item.neonId ?? (typeof item.id === "number" ? item.id : null)}
+              />
+            </div>
+          )}
+
+          {/* FALLBACK trailer YouTube pentru metadate TMDB/Jikan */}
+          {!universalSource && !loading && trailerKey && (
             <iframe
               src={`https://www.youtube-nocookie.com/embed/${trailerKey}?autoplay=1&rel=0${playing ? "" : "&pause=1"}`}
               title={item.title}
@@ -112,7 +146,7 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
             />
           )}
 
-          {!loading && !trailerKey && (
+          {!universalSource && !loading && !trailerKey && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
               <p className="text-sm text-zinc-400">{error || "Se caută trailerul..."}</p>
               <a
@@ -131,18 +165,20 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
           <div className="min-w-0">
             <p className="truncate text-sm font-bold text-zinc-100">{item.title}</p>
             <p className="text-xs text-zinc-500">
-              {isMusic ? "Videoclip muzical" : "Trailer oficial"} • Timp vizionat: {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+              {playKind ? `Redare din ${playKind} • ${universalSource?.providerLabel}` : isMusic ? "Videoclip muzical" : "Trailer oficial"} • Timp vizionat: {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
               {!authed && " • Conectează-te pentru a salva progresul"}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              aria-label={playing ? "Pauză" : "Redă"}
-              onClick={() => setPlaying((p) => !p)}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
-            >
-              {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 fill-current" />}
-            </button>
+            {!universalSource && (
+              <button
+                aria-label={playing ? "Pauză" : "Redă"}
+                onClick={() => setPlaying((p) => !p)}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
+              >
+                {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 fill-current" />}
+              </button>
+            )}
             <button
               aria-label="Închide"
               onClick={onClose}

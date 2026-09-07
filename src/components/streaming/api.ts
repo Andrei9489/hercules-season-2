@@ -30,6 +30,11 @@ export const api = {
   news: <T>(query: string) => get<T>(`/api/news?${query}`),
   fun: <T>(query: string) => get<T>(`/api/fun?${query}`),
   search: <T>(q: string) => get<T>(`/api/search?q=${encodeURIComponent(q)}`),
+  searchMode: <T>(q: string, mode: string, limit = 24) =>
+    get<T>(`/api/search?q=${encodeURIComponent(q)}&mode=${mode}&limit=${limit}`),
+  library: <T>(query: string) => get<T>(`/api/library${query ? `?${query}` : ""}`),
+  libraryPost: <T>(body: unknown) => post<T>("/api/library", body),
+  status: <T>() => get<T>(`/api/status`),
   user: <T>(kind: string) => get<T>(`/api/user?kind=${kind}`),
   userPost: <T>(body: unknown) => post<T>("/api/user", body),
   subtitles: <T>(query: string) => get<T>(`/api/subtitles?${query}`),

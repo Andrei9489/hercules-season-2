@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
+import { searchLibrary, suggest, trending, logSearch } from "@/lib/neon-search";
 
 const TMDB_KEY = process.env.TMDB_API_KEY || "3dd880e229e7b83d8e63c4b6f08f77a4";
 
@@ -12,17 +13,93 @@ export type SearchResult = {
   overview: string;
   rating: number;
   source: string;
+  sourceUrl?: string | null;
+  embedCode?: string | null;
+  provider?: string | null;
+  neonId?: number | null;
 };
 
-export async function GET(req: NextRequest) {
-  const q = req.nextUrl.searchParams.get("q")?.trim() || "";
-  if (!q) return NextResponse.json({ results: [], sources: [] });
+type LibraryItemRow = {
+  id: number; title: string; description: string; thumbnail: string | null;
+  backdrop: string | null; year: number | null; rating: number; contentType: string;
+  provider: string; sourceUrl: string | null; embedCode: string | null; brand: string | null;
+};
 
-  const IMG = "https://image.tmdb.org/t/p/w500";
-  const results: SearchResult[] = [];
+function libToResult(h: LibraryItemRow): SearchResult {
+  return {
+    id: `neon:${h.id}`,
+    mediaType: "neon",
+    title: h.title,
+    poster: h.thumbnail,
+    year: h.year ? String(h.year) : "",
+    overview: h.description.slice(0, 220),
+    rating: h.rating,
+    source: "neon",
+    sourceUrl: h.sourceUrl,
+    embedCode: h.embedCode,
+    provider: h.provider,
+    neonId: h.id,
+  };
+}
+
+export async function GET(req: NextRequest) {
+  const sp = req.nextUrl.searchParams;
+  const q = sp.get("q")?.trim() || "";
+  const mode = sp.get("mode") || "full";
+  const limit = Math.min(48, Number(sp.get("limit")) || 24);
+  const t0 = Date.now();
+
+  // ---- mode=suggest: autocompletare (titluri Neon + trending)
+  if (mode === "suggest") {
+    if (!q) {
+      const t = await trending(8).catch(() => []);
+      return NextResponse.json({ suggestions: t.map((t) => t.original), trending: t.map((t) => t.original) });
+    }
+    const [sug, tr] = await Promise.all([
+      suggest(q, 7).catch(() => [] as string[]),
+      trending(3).catch(() => []),
+    ]);
+    const merged = [...new Set([...sug, ...tr.map((t) => t.original).filter((o) => o.toLowerCase().includes(q.toLowerCase()))])].slice(0, 8);
+    return NextResponse.json({ suggestions: merged });
+  }
+
+  // ---- mode=trending: top căutări
+  if (mode === "trending") {
+    const t = await trending(10).catch(() => []);
+    return NextResponse.json({ trending: t });
+  }
+
+  if (!q) return NextResponse.json({ results: [], sources: [], libraryCount: 0 });
+
+  // ---- mode=library: doar Neon
+  if (mode === "library") {
+    const lib = await searchLibrary(q, { limit });
+    return NextResponse.json({
+      results: lib.hits.map(libToResult),
+      libraryCount: lib.hits.length,
+      tookMs: lib.tookMs,
+      cached: lib.cached,
+    });
+  }
+
+  // ---- mode=full (implicit): Neon FIRST + surse externe în paralel
+  const neonResults: SearchResult[] = [];
+  const extResults: SearchResult[] = [];
   const errors: string[] = [];
 
-  const tasks = [
+  const neonTask = searchLibrary(q, { limit: 24 })
+    .then((lib) => {
+      lib.hits.forEach((h) => neonResults.push(libToResult(h)));
+      return lib.hits.length;
+    })
+    .catch((e) => {
+      errors.push(`neon: ${e}`);
+      return 0;
+    });
+
+  const IMG = "https://image.tmdb.org/t/p/w500";
+
+  const externalTasks = [
     // TMDB multi
     cachedFetch<{ results: Record<string, unknown>[] }>(
       `https://api.themoviedb.org/3/search/multi?api_key=${TMDB_KEY}&query=${encodeURIComponent(q)}&include_adult=false`,
@@ -32,7 +109,7 @@ export async function GET(req: NextRequest) {
         .filter((r) => r.media_type === "movie" || r.media_type === "tv")
         .slice(0, 12)
         .forEach((r) => {
-          results.push({
+          extResults.push({
             id: String(r.id),
             mediaType: (r.media_type as string) || "movie",
             title: ((r.title || r.name) as string) || "",
@@ -52,7 +129,7 @@ export async function GET(req: NextRequest) {
     ).then((d) => {
       d.data.forEach((a) => {
         const img = (a.images as { jpg?: { image_url?: string } })?.jpg?.image_url || null;
-        results.push({
+        extResults.push({
           id: String(a.mal_id),
           mediaType: "anime",
           title: (a.title_english as string) || (a.title as string) || "",
@@ -73,7 +150,7 @@ export async function GET(req: NextRequest) {
       d.slice(0, 6).forEach((r) => {
         const show = r.show as Record<string, unknown>;
         const image = (show.image as { original?: string })?.original || null;
-        results.push({
+        extResults.push({
           id: String(show.id),
           mediaType: "tv-maze",
           title: (show.name as string) || "",
@@ -92,7 +169,7 @@ export async function GET(req: NextRequest) {
       { ttl: 900, cacheKey: `itunes-search:${q}` }
     ).then((d) => {
       d.results.forEach((r) => {
-        results.push({
+        extResults.push({
           id: String(r.trackId),
           mediaType: "music",
           title: (r.trackName as string) || "",
@@ -114,7 +191,7 @@ export async function GET(req: NextRequest) {
     ).then((d) => {
       (d.items || []).forEach((i) => {
         if (!i.id?.videoId) return;
-        results.push({
+        extResults.push({
           id: i.id.videoId,
           mediaType: "video",
           title: i.snippet.title,
@@ -128,15 +205,27 @@ export async function GET(req: NextRequest) {
     }).catch((e) => errors.push(`youtube: ${e}`)),
   ];
 
-  await Promise.allSettled(tasks);
+  const libraryHits = await neonTask;
+  await Promise.allSettled(externalTasks);
+  const results = [...neonResults, ...extResults];
+  const tookMs = Date.now() - t0;
+
+  // log asincron în Neon (nu blochează răspunsul)
+  logSearch(q, results.length, tookMs, "full");
 
   const seen = new Set<string>();
   const unique = results.filter((r) => {
-    const k = `${r.mediaType}:${r.id}`;
+    const k = `${r.source}:${r.mediaType}:${r.id}`;
     if (seen.has(k) || !r.title) return false;
     seen.add(k);
     return true;
   });
 
-  return NextResponse.json({ results: unique, errors: errors.length ? errors : undefined });
+  return NextResponse.json({
+    results: unique,
+    libraryCount: libraryHits,
+    tookMs,
+    cachedResults: unique.length > 0 && unique[0].source === "neon",
+    errors: errors.length ? errors : undefined,
+  });
 }

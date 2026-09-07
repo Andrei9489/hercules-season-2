@@ -45,6 +45,31 @@ const NAV: { key: ViewKey; label: string; icon: typeof Home; group: string }[] =
   { key: "lista", label: "Lista Mea", icon: Bookmark, group: "Cont" },
 ];
 
+// Meniuri vizuale (fără funcții încă — se dezvoltă pas cu pas)
+type SoonItem = { label: string; icon: string; group: string };
+const NAV_SOON: SoonItem[] = [
+  { label: "Marvel", icon: "🦸", group: "Universuri" },
+  { label: "DC", icon: "🦇", group: "Universuri" },
+  { label: "Blockbustere", icon: "💥", group: "Universuri" },
+  { label: "Disney", icon: "🏰", group: "Canale Kids" },
+  { label: "Jetix", icon: "⚡", group: "Canale Kids" },
+  { label: "Fox Kids", icon: "🦊", group: "Canale Kids" },
+  { label: "Cartoon Network", icon: "📺", group: "Canale Kids" },
+  { label: "Boomerang", icon: "🪃", group: "Canale Kids" },
+  { label: "Minimax", icon: "🎈", group: "Canale Kids" },
+  { label: "Divertisment", icon: "🎭", group: "TV & Show-biz" },
+  { label: "Show-biz", icon: "⭐", group: "TV & Show-biz" },
+  { label: "Reality TV", icon: "🎤", group: "TV & Show-biz" },
+  { label: "Emisiuni TV", icon: "🎙️", group: "TV & Show-biz" },
+  { label: "Europa", icon: "🇪🇺", group: "Lumea — 196 țări" },
+  { label: "America de Nord", icon: "🌎", group: "Lumea — 196 țări" },
+  { label: "America de Sud", icon: "🌏", group: "Lumea — 196 țări" },
+  { label: "Asia", icon: "🏯", group: "Lumea — 196 țări" },
+  { label: "Africa", icon: "🌍", group: "Lumea — 196 țări" },
+  { label: "Oceania", icon: "🏝️", group: "Lumea — 196 țări" },
+];
+const SOON_GROUPS = Array.from(new Set(NAV_SOON.map((n) => n.group)));
+
 type Profile = { id: string; name: string; avatar: string; color: string; isKid: boolean };
 
 export function Shell() {
@@ -213,6 +238,26 @@ export function Shell() {
                 <n.icon className="h-4 w-4 shrink-0" />
                 {n.label}
               </button>
+            ))}
+          </div>
+        ))}
+
+        {SOON_GROUPS.map((g) => (
+          <div key={g}>
+            <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-700">{g}</p>
+            {NAV_SOON.filter((n) => n.group === g).map((n) => (
+              <div
+                key={n.label}
+                aria-disabled="true"
+                title="În curând — se dezvoltă pas cu pas"
+                className="mb-0.5 flex cursor-default select-none items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-zinc-600"
+              >
+                <span className="w-4 shrink-0 text-center text-base leading-none">{n.icon}</span>
+                <span className="flex-1 truncate">{n.label}</span>
+                <span className="rounded-full bg-zinc-900 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-zinc-600 ring-1 ring-zinc-800">
+                  curând
+                </span>
+              </div>
             ))}
           </div>
         ))}

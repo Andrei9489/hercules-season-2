@@ -43,7 +43,10 @@ export function DetailModal({ item, open, onClose, onPlay, onOpenItem, isSaved, 
     setLoading(true);
     (async () => {
       try {
-        if (item.source === "jikan" && item.mediaType === "anime") {
+        if (item.source === "neon" || (item as { sourceUrl?: string | null }).sourceUrl) {
+          // item din biblioteca Neon — metadatele sunt deja în item
+          setDetail({ ...item, trailerKey: null });
+        } else if (item.source === "jikan" && item.mediaType === "anime") {
           const d = await api.anime<DetailData>(`mode=details&id=${item.id}`);
           setDetail(d);
         } else if (item.source === "tvmaze" || item.mediaType === "tv-maze") {
@@ -154,14 +157,22 @@ export function DetailModal({ item, open, onClose, onPlay, onOpenItem, isSaved, 
               </p>
 
               <div className="flex flex-wrap gap-2">
-                <Button
-                  onClick={() => onPlay(item!)}
-                  className="bg-red-600 hover:bg-red-500 text-white font-bold"
-                  disabled={!d.trailerKey && d.mediaType !== "music" && d.mediaType !== "video" && !d.trailerKey}
-                >
-                  <Play className="h-4 w-4 mr-1 fill-current" />
-                  {d.trailerKey || d.mediaType === "music" || d.mediaType === "video" ? "Redă" : "Trailer indisponibil"}
-                </Button>
+                {(() => {
+                  const hasDirect = Boolean(
+                    (d as { sourceUrl?: string | null }).sourceUrl || (d as { embedCode?: string | null }).embedCode
+                  );
+                  const playable = hasDirect || d.trailerKey || d.mediaType === "music" || d.mediaType === "video";
+                  return (
+                    <Button
+                      onClick={() => onPlay(item!)}
+                      className="bg-red-600 hover:bg-red-500 text-white font-bold"
+                      disabled={!playable}
+                    >
+                      <Play className="h-4 w-4 mr-1 fill-current" />
+                      {hasDirect ? "Redă acum" : d.trailerKey || d.mediaType === "music" || d.mediaType === "video" ? "Redă" : "Trailer indisponibil"}
+                    </Button>
+                  );
+                })()}
 
                 <Button
                   variant="outline"

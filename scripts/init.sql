@@ -186,3 +186,14 @@ ALTER TABLE "History" ADD CONSTRAINT "History_userId_fkey" FOREIGN KEY ("userId"
 -- AddForeignKey
 ALTER TABLE "Review" ADD CONSTRAINT "Review_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
+
+-- v2 fix: coloane lipsă tabele user (idempotent)
+ALTER TABLE "History" ADD COLUMN IF NOT EXISTS "backdrop" TEXT;
+ALTER TABLE "History" ADD COLUMN IF NOT EXISTS "year" TEXT;
+ALTER TABLE "History" ADD COLUMN IF NOT EXISTS "rating" REAL;
+ALTER TABLE "Watchlist" ADD COLUMN IF NOT EXISTS "backdrop" TEXT;
+ALTER TABLE "Watchlist" ADD COLUMN IF NOT EXISTS "year" TEXT;
+ALTER TABLE "Watchlist" ADD COLUMN IF NOT EXISTS "rating" REAL;
+ALTER TABLE "Favorite" ADD COLUMN IF NOT EXISTS "backdrop" TEXT;
+ALTER TABLE "Favorite" ADD COLUMN IF NOT EXISTS "year" TEXT;
+ALTER TABLE "Favorite" ADD COLUMN IF NOT EXISTS "rating" REAL;

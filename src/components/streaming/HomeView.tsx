@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { MediaItem, UserItem } from "./types";
+import type { MediaItem, UserItem, LibraryItem } from "./types";
 import { api } from "./api";
 import { Hero } from "./Hero";
 import { Row } from "./Row";
 import { MediaCard } from "./MediaCard";
-import { PlayCircle } from "lucide-react";
+import { CapacityPanel } from "./CapacityPanel";
+import { LibraryAddDialog } from "./LibraryAddDialog";
+import { PlayCircle, PlusCircle } from "lucide-react";
 
 type Props = {
   onPlay: (i: MediaItem) => void;
@@ -25,7 +27,19 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
   const [anime, setAnime] = useState<MediaItem[]>([]);
   const [blockbusters, setBlockbusters] = useState<MediaItem[]>([]);
   const [history, setHistory] = useState<UserItem[]>([]);
+  const [library, setLibrary] = useState<LibraryItem[]>([]);
+  const [libraryTotal, setLibraryTotal] = useState(0);
+  const [addOpen, setAddOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const loadLibrary = useCallback(() => {
+    api.library<{ items: LibraryItem[]; total: number }>("limit=18&facets=1")
+      .then((r) => {
+        setLibrary(r.items);
+        setLibraryTotal(r.total);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -43,7 +57,8 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
       setBlockbusters(results[4].status === "fulfilled" ? results[4].value.slice(0, 18) : []);
       setLoading(false);
     })();
-  }, []);
+    loadLibrary();
+  }, [loadLibrary]);
 
   useEffect(() => {
     if (!authed) return;
@@ -55,6 +70,26 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
   const heroItems = trending.slice(0, 5).filter((t) => t.backdrop || t.poster);
 
   const toggle = (i: MediaItem, k: "watchlist" | "favorites") => onToggleList(i, k);
+
+  const libToMedia = (l: LibraryItem): MediaItem => ({
+    id: String(l.id),
+    mediaType: "neon",
+    title: l.title,
+    poster: l.thumbnail,
+    backdrop: l.backdrop,
+    overview: l.description,
+    year: l.year ? String(l.year) : "",
+    rating: l.rating,
+    source: "neon",
+    sourceUrl: l.sourceUrl,
+    embedCode: l.embedCode,
+    provider: l.provider,
+    neonId: l.id,
+  });
+
+  const playLibrary = (l: LibraryItem) => onPlay(libToMedia(l));
+
+  const openLibraryDetail = (l: LibraryItem) => onOpen(libToMedia(l));
 
   if (loading) {
     return (
@@ -77,6 +112,8 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
       <Hero items={heroItems} onPlay={onPlay} onOpen={onOpen} />
 
       <div className="relative z-10 -mt-8 space-y-7 pt-2">
+        <CapacityPanel />
+
         {authed && history.length > 0 && (
           <Row title="▶ Continuă vizionarea" onMore={() => onNavigate("lista")}>
             {history.map((h) => (
@@ -105,6 +142,52 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
             ))}
           </Row>
         )}
+
+        <Row
+          title={`🧠 Biblioteca Neon — redare universală din orice sursă (${libraryTotal.toLocaleString("ro-RO")})`}
+        >
+          <div className="flex shrink-0 items-center">
+            <button
+              onClick={() => setAddOpen(true)}
+              className="flex h-[176px] w-28 flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-700 text-zinc-500 transition hover:border-red-600/60 hover:text-red-400 sm:w-32 lg:w-36"
+            >
+              <PlusCircle className="h-8 w-8" />
+              <span className="px-2 text-center text-[11px] font-bold leading-tight">Adaugă conținut</span>
+              <span className="px-2 text-center text-[10px] leading-tight text-zinc-600">URL • Embed • iframe • JS</span>
+            </button>
+          </div>
+          {library.map((l) => (
+            <div key={`lib-${l.id}`} className="w-36 shrink-0 sm:w-40 lg:w-44">
+              <button
+                onClick={() => playLibrary(l)}
+                className="group relative block aspect-video w-full cursor-pointer overflow-hidden rounded-xl bg-zinc-800 ring-1 ring-white/10"
+              >
+                {l.thumbnail ? (
+                  <img src={l.thumbnail} alt={l.title} className="h-full w-full object-cover" loading="lazy" />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-3xl">🎬</div>
+                )}
+                <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <PlayCircle className="h-10 w-10 text-white drop-shadow" />
+                </div>
+                <span className="absolute left-1.5 top-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-300">
+                  {l.provider}
+                </span>
+                {l.views > 0 && (
+                  <span className="absolute right-1.5 top-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[9px] font-bold text-zinc-200">
+                    ▶ {l.views}
+                  </span>
+                )}
+              </button>
+              <button onClick={() => openLibraryDetail(l)} className="mt-1.5 block w-full cursor-pointer truncate text-left text-[13px] font-medium hover:text-red-400">
+                {l.title}
+              </button>
+              <p className="truncate text-[10px] text-zinc-600">
+                {l.contentType} • {l.country || l.continent || "Global"} • {l.sourceType}
+              </p>
+            </div>
+          ))}
+        </Row>
 
         <Row title="🔥 Trending acum — global" onMore={() => onNavigate("filme")}>
           {trending.map((i) => (
@@ -141,6 +224,12 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
           ))}
         </Row>
       </div>
+
+      <LibraryAddDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onAdded={() => loadLibrary()}
+      />
     </div>
   );
 }
