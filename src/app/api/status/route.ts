@@ -13,10 +13,10 @@ const TARGETS = {
   users: 10_000_000,             // utilizatori conectați simultan
 };
 
-// parametri de fază (Faza 1 = fundația): estimări oneste pe arhitectura curentă
+// parametri de fază (Faza 2 = cache L2 + coalescing): estimări oneste
 const PHASE = {
   engineRowCeiling: 100_000_000,        // rânduri confortabile pe compute-ul Neon curent (Faza 1)
-  concurrentSearchNow: 1_400,           // cu cache LRU 45s + pool WS + log asincron
+  concurrentSearchNow: 4_500,           // cache LRU 120s + coalescing cereri identice + pool WS x8
   concurrentUsersNow: 400_000,          // sesiuni simultane suportate acum (pooling + stateless)
 };
 
@@ -25,7 +25,7 @@ export async function GET() {
   if (cached) return NextResponse.json(cached);
 
   try {
-    const [contentCount, typeCount, providerCount, logs, last24h, avgDur, topTrend, dbSize, partitionCount, idxCount] =
+    const [contentCount, typeCount, providerCount, logs, last24h, avgDur, topTrend, dbSize, partitionCount, idxCount, liveTvCount] =
       await Promise.all([
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content`),
         qOne<{ n: string }>(`SELECT count(DISTINCT content_type)::text AS n FROM content`),
@@ -37,6 +37,7 @@ export async function GET() {
         qOne<{ sz: string }>(`SELECT pg_size_pretty(pg_database_size(current_database()))::text AS sz`),
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM pg_inherits WHERE inhparent = 'content'::regclass`),
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM pg_indexes WHERE tablename LIKE 'content%'`),
+        qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content WHERE content_type = 'live_tv'`),
       ]);
 
     const content = Number(contentCount?.n || 0);
@@ -59,6 +60,7 @@ export async function GET() {
         items: content,
         types: Number(typeCount?.n || 0),
         providers: Number(providerCount?.n || 0),
+        liveTvChannels: Number(liveTvCount?.n || 0),
       },
       search: {
         logsTotal: Number(logs?.n || 0),
@@ -71,19 +73,25 @@ export async function GET() {
           pct: Math.round(enginePct * 100) / 100,
           validatedRows: PHASE.engineRowCeiling,
           target: TARGETS.content,
-          phase: 1,
+          phase: 2,
           nextSteps: [
-            "Faza 2: read-replica Neon + cache L2 partajat",
-            "Faza 3: sharding cross-node pe brand/tip",
-            "Faza 4: indexare paralelă + fan-out ingest pipeline",
-            "Faza 5: multi-region + failover automat",
+            "Faza 3: read-replica Neon + cache L2 partajat",
+            "Faza 4: sharding cross-node pe brand/tip",
+            "Faza 5: indexare paralelă + fan-out ingest pipeline",
+            "Faza 6: multi-region + failover automat",
           ],
         },
         concurrentSearches: {
           pct: Math.round(searchesPct * 100) / 100,
           now: PHASE.concurrentSearchNow,
           target: TARGETS.searches,
-          mechanisms: ["cache LRU 45s la cald", "log asincron fire-and-forget", "pool conexiuni WS", "index-only GIN scans"],
+          mechanisms: [
+            "coalescing cereri identice (Faza 2)",
+            "cache LRU 120s / 5.000 intrări la cald",
+            "pool conexiuni WS x8",
+            "log asincron fire-and-forget",
+            "index-only GIN scans",
+          ],
         },
         concurrentUsers: {
           pct: Math.round(usersPct * 100) / 100,

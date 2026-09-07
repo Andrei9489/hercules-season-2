@@ -17,7 +17,7 @@ function getPool(): Pool {
         : "postgresql://neondb_owner:npg_k8zGXZEKr5xV@ep-sparkling-leaf-b2wkkjbz-pooler.c-6.eu-central-1.aws.neon.tech/neondb?sslmode=require";
     globalForPg.__pgPool = new Pool({
       connectionString: url,
-      max: 4,
+      max: 8, // Faza 2: pool lărgit pentru căutări simultane
       idleTimeoutMillis: 8_000, // conexiunile WS moarte sunt închise rapid
       connectionTimeoutMillis: 10_000,
     });

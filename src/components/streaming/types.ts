@@ -50,7 +50,7 @@ export type CapacityStatus = {
     provider: string; region: string; size: string;
     partitions: number; indexes: number; stateless: boolean; zeroLocal: boolean;
   };
-  library: { items: number; types: number; providers: number };
+  library: { items: number; types: number; providers: number; liveTvChannels?: number };
   search: {
     logsTotal: number; logs24h: number; avgMs: number | null;
     top: { original: string; hits: number }[];

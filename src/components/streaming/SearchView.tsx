@@ -28,6 +28,7 @@ type SearchMeta = { libraryCount: number; tookMs: number };
 export function SearchView({ query, onPlay, onOpen, isSaved, onToggleList }: Props) {
   const [entries, setEntries] = useState<{ q: string; results: SearchResult[]; meta?: SearchMeta }[]>([]);
   const [trend, setTrend] = useState<string[]>([]);
+  const [includeExt, setIncludeExt] = useState(false);
 
   // trending când nu e query
   useEffect(() => {
@@ -40,7 +41,10 @@ export function SearchView({ query, onPlay, onOpen, isSaved, onToggleList }: Pro
   useEffect(() => {
     if (!query.trim()) return;
     let cancelled = false;
-    api.search<{ results: SearchResult[]; libraryCount: number; tookMs: number }>(query.trim())
+    api.searchMode<{ results: SearchResult[]; libraryCount: number; tookMs: number }>(
+      query.trim(),
+      includeExt ? "full" : "library"
+    )
       .then((r) => {
         if (cancelled) return;
         setEntries((prev) =>
@@ -52,7 +56,7 @@ export function SearchView({ query, onPlay, onOpen, isSaved, onToggleList }: Pro
         setEntries((prev) => [...prev.filter((e) => e.q !== query), { q: query, results: [] }].slice(-8));
       });
     return () => { cancelled = true; };
-  }, [query]);
+  }, [query, includeExt]);
 
   const current = query.trim() ? entries.find((e) => e.q === query) : { q: query, results: [] };
   const results = current?.results || [];
@@ -81,9 +85,17 @@ export function SearchView({ query, onPlay, onOpen, isSaved, onToggleList }: Pro
   return (
     <div className="px-4 sm:px-6 py-6">
       <h1 className="mb-1 text-2xl font-black tracking-tight">🔍 Rezultate pentru „{query}"</h1>
-      <p className="mb-1 text-sm text-zinc-500">
-        Motor Neon (FTS + trigram, partiționat) + TMDB, MyAnimeList, TVMaze, iTunes, YouTube
+      <p className="mb-2 text-sm text-zinc-500">
+        Motor Neon (FTS + trigram, partiționat) — 964+ canale TV live, filme, seriale, muzică
       </p>
+      <button
+        onClick={() => setIncludeExt((v) => !v)}
+        className={`mb-3 rounded-full px-3 py-1 text-[11px] font-bold ring-1 transition ${
+          includeExt ? "bg-emerald-600 text-white ring-emerald-500" : "bg-zinc-900 text-zinc-400 ring-zinc-800 hover:text-zinc-200"
+        }`}
+      >
+        {includeExt ? "🌐 Surse externe: PORNITE" : "🧠 Doar Neon — pornește surse externe"}
+      </button>
       {meta && (
         <p className="mb-5 text-[11px] text-zinc-600">
           🧠 {meta.libraryCount} rezultate din biblioteca Neon • {results.length} total • {meta.tookMs}ms

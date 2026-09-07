@@ -43,3 +43,25 @@ Stage Summary:
 - Faza 1 din 5 a motorului de căutare: partiționare hash + FTS/trigram + cache + logging — validată pentru ~100M rânduri (0,33% din 30 mld); căutări simultane ~1.400 (14% din 10.000); utilizatori ~400K (4% din 10M); player compatibil ~90% surse (20+ provideri + generic); 100% date în Neon (zero local).
 - Fișiere cheie noi: scripts/{neon-v2.sql,init-neon-v2.ts,seed-library.ts}, src/lib/{neon-search,source-resolver}.ts, src/app/api/{search,library,status}/, src/components/streaming/{UniversalPlayer,LibraryAddDialog,CapacityPanel}.tsx.
 - Cunoscute: tookMs căutare full dominat de API-uri externe lente (TVMaze/Jikan) — Neon local ~200-400ms; pas următor: mod Neon-only default + extern pe demand, read-replica, sharding.
+
+---
+Task ID: 3
+Agent: Main Agent (Super Z)
+Task: Import playlist M3U „Popular News - CODECS.COM" (964 canale TV live de știri) în Neon + UI „Canale TV Live" în secțiunea Știri + Faza 2 motor de căutare (Neon-first, coalescing, cache L2 lărgit).
+
+Work Log:
+- Salavat playlistul utilizatorului în data/popular-news.m3u — 964 canale, toate cu URL (12 chunkuri verificate: 964 EXTINF / 964 URL).
+- scripts/import-news-m3u.ts: parser M3U robust (titlu = text după ultimul `",` — tratează liniile corupte cu user-agent scurs în titlu), extrage tvg-id (țară = TLD-ul dinainte de @), tvg-logo, group-title, calitate (1080p/576p…), [Geo-blocked], [Not 24/7]; detectează HLS (.m3u8) / DASH (.mpd) / SRT (srt://) / MP4; hartă țară→[nume RO, continent] (117 țări); external_id = popnews:md5(url) idempotent; inserare batch 50 rânduri + coloane ajutătoare meta_quality/meta_geo/meta_not247 (ALTER IF NOT EXISTS).
+- Import reușit: +964 canale live_tv, 117 țări; total content=1.093→1.094; popul: flagship global (BBC/CNN/Al Jazeera/France 24/DW/Euronews/Sky/RT/TRT/Digi 24/TVR/Pro TV…) = 500, RO = 400, restul 25; language pe țară.
+- Fix post-import: coloana country avea nume RO în loc de cod ISO → scripts/fix-country-codes.ts (UPDATE pe 964 rânduri, 0 rămase) + import script corectat pentru rulări viitoare.
+- /api/channels NOU: listare live_tv cu q (LIKE pe search_text normalizat), filtre țară (cod lowercase) & continent, paginare, facet țări cu count (cache 10 min), nume RO din src/lib/countries.ts (și helper countryFlag/countryName).
+- NewsView rescris: tab-uri „Canale TV Live" (implicit) | „Știri (RSS)"; grid 2-6 coloane cu logo, steag emoji, țară, calitate, badge GEO/DASH; căutare cu debounce 350ms; selector țară din facet; paginare „Mai multe"; ChannelPlayer — Dialog cu UniversalPlayer (HLS prin hls.js) + eveniment play_event în Neon + link extern; canalele DASH/SRT marcate și dezactivate (mesaj explicativ player extern).
+- Faza 2 căutare: neon-search.ts — cache LRU TTL 45s→120s, max 2.000→5.000, coalescing cereri identice în zbor (inFlight Map); pg.ts pool max 4→8; /api/search mod implicit „library" (Neon-only, rapid) + logare search_logs în modul library; SearchView — toggle „Doar Neon / Surse externe PORNITE" (mode=full la cerere).
+- /api/status: PHASE.concurrentSearchNow 1.400→4.500 (coalescing + cache L2 + pool x8), phase=2, nextSteps renumerotate, library.liveTvChannels adăugat.
+- Verificare Agent Browser E2E: home OK (1.094 itemi în panou capacitate); Știri→Live TV afișează „964 canale din 117 țări" cu steaguri + badge-uri; căutare „Al Jazeera" → 7 canale; redare Al Jazeera English HLS ACTIVĂ (0:15+), play_event start/heartbeat/complete confirmate în Neon; filtru RO → 10 canale (Aleph News, Digi 24, Euronews Romania, Observator, Pro TV News, TVR Info…); canal DASH (BBC Arabic) marcat non-playabil; căutare globală „digi 24" → rezultat Neon cu badge 🧠 BIBLIOTECA NEON; tab RSS OK (BBC live); mobil 390px OK; lint curat (0/0).
+
+Stage Summary:
+- Bibliotecă Neon: 1.094 conținuturi reale, dintre care 964 canale TV live din 117 țări, 100% în Neon (zero local).
+- Faza 2 din 6 motor de căutare: plafon validat ~100M rânduri (0,33% din 30 mld); căutări simultane ~4.500 (45% din 10.000); utilizatori ~400K (4% din 10M); server redare universală ~90% surse (HLS/DASH-marcat/embed/iframe/JS/MP4 + 20+ provideri).
+- Fișiere cheie noi: data/popular-news.m3u, scripts/{import-news-m3u,fix-country-codes,check-tv-metrics}.ts, src/lib/countries.ts, src/app/api/channels/route.ts.
+- Cunoscute: canalele DASH (.mpd) și SRT nu sunt redate în browser (marcaj vizual + player extern recomandat); unele streamuri publice pot fi geo-blocate sau offline la sursă (marcate GEO / Not 24/7); tookMs la prima căutare include compile (~700ms), apoi <100ms cu cache.

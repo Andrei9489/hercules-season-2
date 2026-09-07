@@ -34,6 +34,7 @@ export const api = {
     get<T>(`/api/search?q=${encodeURIComponent(q)}&mode=${mode}&limit=${limit}`),
   library: <T>(query: string) => get<T>(`/api/library${query ? `?${query}` : ""}`),
   libraryPost: <T>(body: unknown) => post<T>("/api/library", body),
+  channels: <T>(query: string) => get<T>(`/api/channels${query ? `?${query}` : ""}`),
   status: <T>() => get<T>(`/api/status`),
   user: <T>(kind: string) => get<T>(`/api/user?kind=${kind}`),
   userPost: <T>(body: unknown) => post<T>("/api/user", body),

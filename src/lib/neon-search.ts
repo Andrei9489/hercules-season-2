@@ -43,10 +43,14 @@ export type LibraryHit = {
 };
 
 // ---------- Cache LRU la cald (protecție Neon la vârfuri) ----------
+// Faza 2: TTL mai lung + cache mai mare + coalescing cereri identice.
 type CacheEntry = { exp: number; data: LibraryHit[] };
-const RESULT_TTL_MS = 45_000;
-const CACHE_MAX = 2_000;
+const RESULT_TTL_MS = 120_000;
+const CACHE_MAX = 5_000;
 const searchCache = new Map<string, CacheEntry>();
+// coalescing: cererile simultane identice partajează ACEEAși promisiune
+// (10.000 căutări simultane pe top-query-uri → 1 singur hit în Neon)
+const inFlight = new Map<string, Promise<LibraryHit[]>>();
 
 function cacheGet(key: string): LibraryHit[] | null {
   const hit = searchCache.get(key);
@@ -73,6 +77,7 @@ function cacheSet(key: string, data: LibraryHit[]): void {
 export function invalidateSearchCache(prefix?: string): void {
   if (!prefix) {
     searchCache.clear();
+    inFlight.clear();
     return;
   }
   for (const k of searchCache.keys()) {
@@ -114,6 +119,15 @@ export async function searchLibrary(
   const cacheKey = `sl:${norm}:${limit}:${offset}:${type || "*"}:${brand || "*"}`;
   const cached = cacheGet(cacheKey);
   if (cached) return { hits: cached, tookMs: Date.now() - t0, cached: true, totalIndexed: 0 };
+
+  // coalescing: dacă o cerere identică e deja în zbor, așteptăm-o
+  const pending = inFlight.get(cacheKey);
+  if (pending) {
+    const hits = await pending;
+    return { hits, tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
+  }
+
+  const exec = (async (): Promise<LibraryHit[]> => {
 
   // to_tsquery cu prefix per termen: "marii pitici" -> marii:* & pitici:*
   const terms = norm.split(" ").filter(Boolean).slice(0, 8).map((t) => t.replace(/[^\w]/g, ""));
@@ -163,7 +177,16 @@ export async function searchLibrary(
   const rows = await q<Record<string, unknown>>(sql, params);
   const hits = rows.map(mapHit);
   cacheSet(cacheKey, hits);
-  return { hits, tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
+  return hits;
+  })();
+
+  inFlight.set(cacheKey, exec);
+  try {
+    const hits = await exec;
+    return { hits, tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
+  } finally {
+    inFlight.delete(cacheKey);
+  }
 }
 
 function mapHit(r: Record<string, unknown>): LibraryHit {

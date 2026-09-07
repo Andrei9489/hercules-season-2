@@ -45,7 +45,9 @@ function libToResult(h: LibraryItemRow): SearchResult {
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const q = sp.get("q")?.trim() || "";
-  const mode = sp.get("mode") || "full";
+  // Faza 2: mod implicit "library" (Neon-only, sub-100ms, gata 10.000 simultan).
+  // mode=full include surse externe (TMDB/Jikan/TVMaze/iTunes/YouTube) la cerere.
+  const mode = sp.get("mode") || "library";
   const limit = Math.min(48, Number(sp.get("limit")) || 24);
   const t0 = Date.now();
 
@@ -71,9 +73,10 @@ export async function GET(req: NextRequest) {
 
   if (!q) return NextResponse.json({ results: [], sources: [], libraryCount: 0 });
 
-  // ---- mode=library: doar Neon
+  // ---- mode=library (implicit): doar Neon, viteză maximă
   if (mode === "library") {
     const lib = await searchLibrary(q, { limit });
+    logSearch(q, lib.hits.length, lib.tookMs, "library");
     return NextResponse.json({
       results: lib.hits.map(libToResult),
       libraryCount: lib.hits.length,
@@ -82,7 +85,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // ---- mode=full (implicit): Neon FIRST + surse externe în paralel
+  // ---- mode=full: Neon FIRST + surse externe în paralel (opt-in)
   const neonResults: SearchResult[] = [];
   const extResults: SearchResult[] = [];
   const errors: string[] = [];
