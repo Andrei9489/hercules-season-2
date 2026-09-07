@@ -14,12 +14,12 @@ type Props = {
 /**
  * Player universal: redă din orice sursă —
  *  iframe (YouTube/Vimeo/Dailymotion/ok.ru/Rumble/Twitch/etc.),
- *  video nativ (MP4/WebM), HLS (hls.js), HTML embed sandoboxat,
- *  sursă necunoscută → iframe generic + fallback deschidere în tab nou.
+ *  video nativ (MP4/WebM), HLS (hls.js), DASH (dash.js), HTML embed
+ *  sandoboxat, sursă necunoscută → iframe generic + fallback extern.
  */
 export function UniversalPlayer({ source, title, contentId, compact }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [hlsError, setHlsError] = useState<string | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
   const [fallback, setFallback] = useState(false);
   const eventTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const seconds = useRef(0);
@@ -75,16 +75,16 @@ export function UniversalPlayer({ source, title, contentId, compact }: Props) {
           engine.loadSource(source.src);
           engine.attachMedia(video);
           engine.on(Hls.Events.ERROR, (_e, data) => {
-            if (data.fatal) setHlsError("Streamul HLS nu poate fi redat momentan.");
+            if (data.fatal) setMediaError("Streamul HLS nu poate fi redat momentan.");
           });
           hls = engine;
         } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
           video.src = source.src; // Safari nativ
         } else {
-          setHlsError("HLS nu este suportat în acest browser.");
+          setMediaError("HLS nu este suportat în acest browser.");
         }
       } catch {
-        if (!destroyed) setHlsError("Nu am putut încărca motorul HLS.");
+        if (!destroyed) setMediaError("Nu am putut încărca motorul HLS.");
       }
     })();
     return () => {
@@ -93,15 +93,47 @@ export function UniversalPlayer({ source, title, contentId, compact }: Props) {
     };
   }, [source]);
 
+  // DASH prin dash.js (import dinamic) — canale .mpd (BBC, Polsat etc.)
+  useEffect(() => {
+    if (source.kind !== "dash") return;
+    let destroyed = false;
+    let player: { reset: () => void; destroy?: () => void } | null = null;
+    type DashPlayer = {
+      initialize: (el: HTMLVideoElement, url: string, autoPlay?: boolean) => void;
+      reset: () => void;
+      destroy?: () => void;
+    };
+    (async () => {
+      try {
+        const mod = (await import("dashjs")) as unknown as {
+          default?: { MediaPlayer: () => { create: () => DashPlayer } };
+          MediaPlayer?: () => { create: () => DashPlayer };
+        };
+        const dashjs = mod.default ?? mod;
+        const video = videoRef.current;
+        if (!video || destroyed) return;
+        const p = dashjs.MediaPlayer().create();
+        p.initialize(video, source.src, true);
+        player = p;
+      } catch {
+        if (!destroyed) setMediaError("Nu am putut încărca motorul DASH.");
+      }
+    })();
+    return () => {
+      destroyed = true;
+      try { player?.reset(); player?.destroy?.(); } catch { /* ignore */ }
+    };
+  }, [source]);
+
   const outer = compact ? "h-full w-full" : "absolute inset-0 h-full w-full";
 
-  if (source.kind === "video" || source.kind === "hls") {
+  if (source.kind === "video" || source.kind === "hls" || source.kind === "dash") {
     return (
       <div className={outer}>
-        {source.kind === "hls" && hlsError ? (
+        {mediaError ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
             <ShieldAlert className="h-8 w-8 text-amber-400" />
-            <p className="text-sm text-zinc-400">{hlsError}</p>
+            <p className="text-sm text-zinc-400">{mediaError}</p>
             <a href={source.src} target="_blank" rel="noreferrer" className="rounded bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-500">
               Deschide streamul în tab nou
             </a>
@@ -114,7 +146,7 @@ export function UniversalPlayer({ source, title, contentId, compact }: Props) {
             autoPlay
             playsInline
             className="h-full w-full bg-black"
-            onError={() => setHlsError("Fișierul media nu poate fi redat (format sau CORS nesuportat).")}
+            onError={() => setMediaError("Fișierul media nu poate fi redat (format sau CORS nesuportat).")}
           />
         )}
       </div>

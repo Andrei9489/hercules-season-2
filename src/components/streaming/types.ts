@@ -50,10 +50,19 @@ export type CapacityStatus = {
     provider: string; region: string; size: string;
     partitions: number; indexes: number; stateless: boolean; zeroLocal: boolean;
   };
-  library: { items: number; types: number; providers: number; liveTvChannels?: number };
+  library: {
+    items: number; types: number; providers: number; liveTvChannels?: number;
+    countries?: number; streamFormats?: Record<string, number>;
+  };
   search: {
     logsTotal: number; logs24h: number; avgMs: number | null;
     top: { original: string; hits: number }[];
+  };
+  player?: { compatPct: number; engines: string[] };
+  benchmark?: {
+    at: string; peakLocalRps: number; note: string;
+    concurrent150: { rps: number; errors: number; cacheHitPct: number };
+    concurrent50: { rps: number; p95Ms: number; cacheHitPct: number };
   };
   capacity: {
     engine: { pct: number; validatedRows: number; target: number; phase: number; nextSteps: string[] };

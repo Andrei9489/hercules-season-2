@@ -262,7 +262,7 @@ function LiveTV() {
 }
 
 function ChannelCard({ ch, onPlay }: { ch: Channel; onPlay: () => void }) {
-  const playable = ch.sourceType === "hls" || ch.sourceType === "video";
+  const playable = ch.sourceType === "hls" || ch.sourceType === "video" || ch.sourceType === "dash";
   return (
     <button
       onClick={() => playable && onPlay()}
@@ -308,7 +308,7 @@ function ChannelCard({ ch, onPlay }: { ch: Channel; onPlay: () => void }) {
 function ChannelPlayer({ channel, onClose }: { channel: Channel | null; onClose: () => void }) {
   const source = useMemo(() => {
     if (!channel?.sourceUrl) return null;
-    if (channel.sourceType === "hls" || channel.sourceType === "video") {
+    if (channel.sourceType === "hls" || channel.sourceType === "video" || channel.sourceType === "dash") {
       return resolveSource(channel.sourceUrl, { parent: typeof window !== "undefined" ? window.location.hostname : "" });
     }
     return null;
@@ -341,8 +341,8 @@ function ChannelPlayer({ channel, onClose }: { channel: Channel | null; onClose:
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
               <ShieldAlert className="h-8 w-8 text-amber-400" />
               <p className="text-sm text-zinc-400">
-                Acest canal folosește format <b>{channel.sourceType.toUpperCase()}</b> care nu poate fi redat direct în
-                browser. Streamurile SRT/DASH necesită player extern (VLC, mpv).
+                Acest canal folosește protocol <b>{channel.sourceType.toUpperCase()}</b> care nu poate fi redat direct în
+                browser (SRT = stream profesional broadcast). Descarcă streamul și deschide-l într-un player extern (VLC, mpv).
               </p>
               {channel.sourceUrl && (
                 <a

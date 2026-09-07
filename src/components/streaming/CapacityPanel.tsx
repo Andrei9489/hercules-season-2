@@ -120,7 +120,9 @@ export function CapacityPanel() {
                 </div>
                 <div>
                   <p className="text-base font-black text-zinc-100">{st.library.types} tipuri • {st.library.providers} provideri</p>
-                  <p className="text-[10px] text-zinc-500">compatibilitate surse: ~90% (14+ platforme + generic)</p>
+                  <p className="text-[10px] text-zinc-500">
+                    compatibilitate surse: ~{st.player?.compatPct ?? 95}% — HLS + DASH + embed/JS (20+ platforme)
+                  </p>
                 </div>
                 <div>
                   <p className="text-base font-black text-zinc-100">{st.search.logsTotal.toLocaleString("ro-RO")} căutări loggate</p>
@@ -134,6 +136,12 @@ export function CapacityPanel() {
               {st.search.top.length > 0 && (
                 <p className="mt-2 truncate text-[10px] text-zinc-600">
                   Trend căutări: {st.search.top.map((t) => `${t.original} (${t.hits})`).join(" • ")}
+                </p>
+              )}
+              {st.benchmark && (
+                <p className="mt-1 truncate text-[10px] text-zinc-600">
+                  📊 Benchmark real: {st.benchmark.peakLocalRps} req/s pe 1 instanță • 0 erori la 150 concurente •
+                  cache-hit {st.benchmark.concurrent150.cacheHitPct}% • P95 {st.benchmark.concurrent50.p95Ms}ms la 50 concurente
                 </p>
               )}
             </div>

@@ -3,6 +3,7 @@ import { q, qOne } from "@/lib/pg";
 import { cacheGet, cacheSet } from "@/lib/cache";
 import { normalizeRo } from "@/lib/neon-search";
 import { countryName } from "@/lib/countries";
+import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
 
 // ============================================================
 // /api/channels — canale TV live (Popular News) din Neon
@@ -28,6 +29,10 @@ export type ChannelRow = {
 };
 
 export async function GET(req: NextRequest) {
+  // Faza 3: rate limiting per IP + cache HTTP la margine
+  const rl = rateLimit(`chan:${clientIp(req)}`, { burst: 60, perMinute: 240 });
+  if (!rl.ok) return tooMany(rl);
+
   const sp = req.nextUrl.searchParams;
   const qRaw = sp.get("q")?.trim() || "";
   const country = sp.get("country")?.trim() || "";
@@ -62,7 +67,17 @@ export async function GET(req: NextRequest) {
       cacheSet(facetKey, { countries, totalAll }, 600);
     }
 
-    // ---- interogare principală ----
+    // ---- interogare principală (Faza 3: cache 60s per combinație de filtre) ----
+    const listKey = `chan:list:${qRaw}:${country}:${continent}:${limit}:${offset}`;
+    const cachedList = cacheGet<{ items: ChannelRow[]; filteredTotal: number }>(listKey);
+
+    let items: ChannelRow[];
+    let filteredTotal: number;
+
+    if (cachedList) {
+      items = cachedList.items;
+      filteredTotal = cachedList.filteredTotal;
+    } else {
     const params: unknown[] = [];
     let p = 0;
     const next = (v: unknown) => {
@@ -90,14 +105,14 @@ export async function GET(req: NextRequest) {
       params
     );
 
-    const filteredTotal = qRaw || country || continent
+    const ft = qRaw || country || continent
       ? await qOne<{ n: string }>(
           `SELECT count(*)::text AS n FROM content WHERE ${where}`,
           params.slice(0, params.length - 2)
         )
       : null;
 
-    const items: ChannelRow[] = rows.map((r) => ({
+    items = rows.map((r) => ({
       id: Number(r.id),
       title: String(r.title),
       description: String(r.description || ""),
@@ -114,16 +129,27 @@ export async function GET(req: NextRequest) {
       geoBlocked: Boolean(r.geoBlocked),
       not247: Boolean(r.not247),
     }));
+    filteredTotal = ft ? Number(ft.n) : totalAll;
+    cacheSet(listKey, { items, filteredTotal }, 60);
+    }
 
-    return NextResponse.json({
-      ok: true,
-      items,
-      total: totalAll,
-      filteredTotal: filteredTotal ? Number(filteredTotal.n) : totalAll,
-      countries,
-      limit,
-      offset,
-    });
+    return NextResponse.json(
+      {
+        ok: true,
+        items,
+        total: totalAll,
+        filteredTotal,
+        countries,
+        limit,
+        offset,
+      },
+      {
+        headers: {
+          "Cache-Control": "public, s-maxage=20, stale-while-revalidate=60",
+          "X-RateLimit-Remaining": String(rl.remaining),
+        },
+      }
+    );
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }

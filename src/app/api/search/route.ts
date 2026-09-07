@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 import { searchLibrary, suggest, trending, logSearch } from "@/lib/neon-search";
+import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
 
 const TMDB_KEY = process.env.TMDB_API_KEY || "3dd880e229e7b83d8e63c4b6f08f77a4";
 
@@ -51,6 +52,15 @@ export async function GET(req: NextRequest) {
   const limit = Math.min(48, Number(sp.get("limit")) || 24);
   const t0 = Date.now();
 
+  // ---- Faza 3: rate limiting per IP (token bucket) — protecție Neon ----
+  const ip = clientIp(req);
+  // autocompletarea are buget propriu, generos (tastele rapid = multe cereri)
+  const rl = rateLimit(mode === "suggest" ? `sug:${ip}` : `srch:${ip}`, {
+    burst: mode === "suggest" ? 120 : 40,
+    perMinute: mode === "suggest" ? 600 : 300,
+  });
+  if (!rl.ok) return tooMany(rl);
+
   // ---- mode=suggest: autocompletare (titluri Neon + trending)
   if (mode === "suggest") {
     if (!q) {
@@ -77,12 +87,22 @@ export async function GET(req: NextRequest) {
   if (mode === "library") {
     const lib = await searchLibrary(q, { limit });
     logSearch(q, lib.hits.length, lib.tookMs, "library");
-    return NextResponse.json({
-      results: lib.hits.map(libToResult),
-      libraryCount: lib.hits.length,
-      tookMs: lib.tookMs,
-      cached: lib.cached,
-    });
+    // Faza 3: cache HTTP la margine (CDN/edge) pentru vârfuri — top-queries
+    // servite fără să atingă origin-ul (stale-while-revalidate)
+    return NextResponse.json(
+      {
+        results: lib.hits.map(libToResult),
+        libraryCount: lib.hits.length,
+        tookMs: lib.tookMs,
+        cached: lib.cached,
+      },
+      {
+        headers: {
+          "Cache-Control": "public, s-maxage=15, stale-while-revalidate=45",
+          "X-RateLimit-Remaining": String(rl.remaining),
+        },
+      }
+    );
   }
 
   // ---- mode=full: Neon FIRST + surse externe în paralel (opt-in)

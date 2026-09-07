@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSession, signOut, signIn } from "next-auth/react";
 import {
   Home, Film, Tv, Sparkles, Music2, Baby, Trophy, Gamepad2,
@@ -81,6 +81,11 @@ export function Shell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchInput, setSearchInput] = useState("");
+  // Faza 3: autocompletare live din Neon (suggest API)
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showSug, setShowSug] = useState(false);
+  const [sugIdx, setSugIdx] = useState(-1);
+  const sugAbort = useRef<AbortController | null>(null);
   const [detailItem, setDetailItem] = useState<MediaItem | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [playerItem, setPlayerItem] = useState<MediaItem | null>(null);
@@ -184,10 +189,43 @@ export function Shell() {
     window.scrollTo({ top: 0 });
   }, []);
 
+  // autocompletare live: debounce 180ms → /api/search?mode=suggest (Neon)
+  // q gol → trending din search_stats (upsert_search_stat)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      sugAbort.current?.abort();
+      const ac = new AbortController();
+      sugAbort.current = ac;
+      fetch(`/api/search?mode=suggest&q=${encodeURIComponent(searchInput.trim())}`, {
+        signal: ac.signal,
+        cache: "no-store",
+      })
+        .then((r) => (r.ok ? r.json() : { suggestions: [] }))
+        .then((d: { suggestions?: string[] }) => {
+          if (ac.signal.aborted) return;
+          setSuggestions((d.suggestions || []).slice(0, 7));
+          setSugIdx(-1);
+        })
+        .catch(() => {});
+    }, 180);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  const pickSuggestion = useCallback(
+    (s: string) => {
+      setSearchInput(s);
+      setSearchQuery(s);
+      setShowSug(false);
+      navigate("search");
+    },
+    [navigate]
+  );
+
   const submitSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (searchInput.trim()) {
       setSearchQuery(searchInput.trim());
+      setShowSug(false);
       navigate("search");
     }
   };
@@ -315,10 +353,51 @@ export function Shell() {
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
             <Input
               value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
+              onChange={(e) => { setSearchInput(e.target.value); setShowSug(true); }}
+              onFocus={() => setShowSug(true)}
+              onBlur={() => setTimeout(() => setShowSug(false), 120)}
+              onKeyDown={(e) => {
+                if (!showSug || suggestions.length === 0) return;
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSugIdx((i) => (i + 1) % suggestions.length);
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSugIdx((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+                } else if (e.key === "Enter" && sugIdx >= 0) {
+                  e.preventDefault();
+                  pickSuggestion(suggestions[sugIdx]);
+                } else if (e.key === "Escape") {
+                  setShowSug(false);
+                }
+              }}
               placeholder="Caută filme, seriale, anime, muzică..."
               className="h-9 border-zinc-800 bg-zinc-900/80 pl-8 text-sm text-zinc-200 placeholder:text-zinc-500 focus-visible:ring-red-600/50"
+              aria-autocomplete="list"
+              aria-expanded={showSug && suggestions.length > 0}
+              role="combobox"
             />
+            {showSug && suggestions.length > 0 && (
+              <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/95 shadow-2xl shadow-black/60 backdrop-blur">
+                <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
+                  {searchInput.trim() ? "🧠 Sugestii din biblioteca Neon" : "🔥 Căutări populare acum"}
+                </p>
+                {suggestions.map((s, i) => (
+                  <button
+                    type="button"
+                    key={`${s}:${i}`}
+                    onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }}
+                    onMouseEnter={() => setSugIdx(i)}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition ${
+                      i === sugIdx ? "bg-red-600/20 text-red-300" : "text-zinc-300"
+                    }`}
+                  >
+                    <Search className="h-3.5 w-3.5 shrink-0 text-zinc-600" />
+                    <span className="truncate">{s}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </form>
 
           <div className="ml-auto flex items-center gap-2">

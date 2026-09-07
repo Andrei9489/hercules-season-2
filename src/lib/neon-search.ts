@@ -78,10 +78,14 @@ export function invalidateSearchCache(prefix?: string): void {
   if (!prefix) {
     searchCache.clear();
     inFlight.clear();
+    sugCache.clear();
     return;
   }
   for (const k of searchCache.keys()) {
     if (k.startsWith(prefix)) searchCache.delete(k);
+  }
+  for (const k of sugCache.keys()) {
+    if (k.startsWith("sug:")) sugCache.delete(k);
   }
 }
 
@@ -143,13 +147,14 @@ export async function searchLibrary(
     return `$${p}`;
   };
 
-  const pNorm = next(norm);
+  // FIX 42P18: parametrii se alocă DOAR dacă sunt referențiați în SQL —
+  // pentru prefixuri scurte (<3) pNorm nu era folosit nicăieri și Postgres
+  // respice statementul ("could not determine data type of parameter $1").
   const pTsq = next(tsq);
   const pPrefix = next(prefix + "%");
-
-  conditions.push(`search_tsv @@ to_tsquery('simple', ${pTsq})`);
+  let pSim = "";
   if (prefix.length >= 3) {
-    const pSim = next(norm);
+    pSim = next(norm);
     conditions.push(`search_text % ${pSim}`);
   }
   const pLike = next(`%${prefix}%`);
@@ -157,7 +162,7 @@ export async function searchLibrary(
 
   const scoreExpr = `
     (ts_rank(search_tsv, to_tsquery('simple', ${pTsq})) * 8
-     ${prefix.length >= 3 ? `+ similarity(search_text, ${pNorm}) * 3` : ""}
+     ${pSim ? `+ similarity(search_text, ${pSim}) * 3` : ""}
      + CASE WHEN search_text LIKE ${pPrefix} THEN 3 ELSE 0 END
      + LEAST(popularity, 5000) / 5000.0 * 1.2)`;
 
@@ -216,29 +221,84 @@ function mapHit(r: Record<string, unknown>): LibraryHit {
 }
 
 // ---------- Sugestii (prefix pe titluri + trending) ----------
+// Faza 3: cache LRU propriu pentru suggest/trending (prefixele se repetă
+// masiv la autocompletare → sub-1ms la cald, zero load pe Neon)
+const SUG_TTL_MS = 60_000;
+const SUG_MAX = 2_000;
+const sugCache = new Map<string, { exp: number; data: unknown }>();
+
+function sugGet<T>(key: string): T | null {
+  const hit = sugCache.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.exp) { sugCache.delete(key); return null; }
+  sugCache.delete(key);
+  sugCache.set(key, hit);
+  return hit.data as T;
+}
+
+function sugSet(key: string, data: unknown): void {
+  if (sugCache.size >= SUG_MAX) {
+    const oldest = sugCache.keys().next().value;
+    if (oldest) sugCache.delete(oldest);
+  }
+  sugCache.set(key, { exp: Date.now() + SUG_TTL_MS, data });
+}
+
 export async function suggest(prefix: string, limit = 7): Promise<string[]> {
   const norm = normalizeRo(prefix);
   if (!norm) return [];
+  const key = `sug:${norm}:${limit}`;
+  const cached = sugGet<string[]>(key);
+  if (cached) return cached;
   const rows = await q<{ title: string }>(
     `SELECT DISTINCT title FROM content
      WHERE search_text LIKE $1 || '%'
      ORDER BY title LIMIT $2`,
     [norm, limit]
   );
-  return rows.map((r) => r.title);
+  const titles = rows.map((r) => r.title);
+  sugSet(key, titles);
+  return titles;
 }
 
 export type TrendItem = { norm: string; original: string; hits: number };
 
 export async function trending(limit = 8): Promise<TrendItem[]> {
+  const key = `trend:${limit}`;
+  const cached = sugGet<TrendItem[]>(key);
+  if (cached) return cached;
   const rows = await q<Record<string, unknown>>(
     `SELECT norm, original, hits FROM search_stats ORDER BY hits DESC, last_at DESC LIMIT $1`,
     [limit]
   );
-  return rows.map((r) => ({ norm: String(r.norm), original: String(r.original), hits: Number(r.hits) }));
+  const items = rows.map((r) => ({ norm: String(r.norm), original: String(r.original), hits: Number(r.hits) }));
+  sugSet(key, items);
+  return items;
 }
 
 // ---------- Logging asincron (fire-and-forget, nu blochează răspunsul) ----------
+// Faza 3: semafor cu coadă — logging-ul NU mai poate satura pool-ul Neon
+// (max 2 scrieri concurente, coadă plafonată; sub vârf extrem se renunță
+// la analitică, nu la răspunsul utilizatorului).
+const LOG_MAX_ACTIVE = 2;
+const LOG_MAX_QUEUE = 800;
+let logActive = 0;
+const logQueue: Array<() => Promise<void>> = [];
+
+function pumpLog(): void {
+  while (logActive < LOG_MAX_ACTIVE && logQueue.length > 0) {
+    const job = logQueue.shift();
+    if (!job) break;
+    logActive++;
+    job()
+      .catch(() => { /* analitică — nu rupe nimic */ })
+      .finally(() => {
+        logActive--;
+        pumpLog();
+      });
+  }
+}
+
 export function logSearch(
   query: string,
   resultsCount: number,
@@ -248,18 +308,16 @@ export function logSearch(
 ): void {
   const norm = normalizeRo(query);
   if (!norm) return;
-  void (async () => {
-    try {
-      await q(
-        `INSERT INTO search_logs (query, norm, results_count, duration_ms, mode, user_id)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [query.slice(0, 200), norm, resultsCount, durationMs, mode, userId || null]
-      );
-      await q(`SELECT upsert_search_stat($1,$2,$3)`, [norm, query.slice(0, 120), resultsCount]);
-    } catch {
-      /* logging nu poate rupe căutarea */
-    }
-  })();
+  if (logQueue.length >= LOG_MAX_QUEUE) return; // drop sub vârf extrem
+  logQueue.push(async () => {
+    await q(
+      `INSERT INTO search_logs (query, norm, results_count, duration_ms, mode, user_id)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [query.slice(0, 200), norm, resultsCount, durationMs, mode, userId || null]
+    );
+    await q(`SELECT upsert_search_stat($1,$2,$3)`, [norm, query.slice(0, 120), resultsCount]);
+  });
+  pumpLog();
 }
 
 // ---------- Ingestion: inserare conținut nou (URL/embed) ----------

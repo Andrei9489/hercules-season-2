@@ -12,6 +12,7 @@ export type ResolvedSource =
   | { kind: "iframe"; src: string; provider: string; providerLabel: string }
   | { kind: "video"; src: string; provider: string; providerLabel: string }
   | { kind: "hls"; src: string; provider: string; providerLabel: string }
+  | { kind: "dash"; src: string; provider: string; providerLabel: string }
   | { kind: "html"; html: string; provider: string; providerLabel: string }
   | { kind: "unknown"; url: string; provider: string; providerLabel: string };
 
@@ -21,11 +22,12 @@ export const PROVIDER_LABELS: Record<string, string> = {
   vk: "VK", streamable: "Streamable", gdrive: "Google Drive", odysee: "Odysee",
   bitchute: "BitChute", bilibili: "Bilibili", archive: "Archive.org", ted: "TED",
   soundcloud: "SoundCloud", spotify: "Spotify", mixcloud: "Mixcloud",
-  direct: "MP4/WebM direct", hls: "HLS (m3u8)", embed: "Embed cod", unknown: "Sursă externă",
+  direct: "MP4/WebM direct", hls: "HLS (m3u8)", dash: "DASH (mpd)", embed: "Embed cod", unknown: "Sursă externă",
 };
 
 const DIRECT_RE = /\.(mp4|webm|ogg|ogv|mov|m4v|mp3|m4a|wav)(\?.*)?$/i;
 const HLS_RE = /\.m3u8(\?.*)?$/i;
+const DASH_RE = /\.mpd(\?.*)?$/i;
 
 function label(p: string): string {
   return PROVIDER_LABELS[p] || p;
@@ -57,6 +59,9 @@ export function resolveUrl(rawUrl: string, opts: { parent?: string } = {}): Reso
   // ---------- Fișiere directe ----------
   if (HLS_RE.test(lower)) {
     return { kind: "hls", src: url, provider: "hls", providerLabel: label("hls") };
+  }
+  if (DASH_RE.test(lower)) {
+    return { kind: "dash", src: url, provider: "dash", providerLabel: label("dash") };
   }
   if (DIRECT_RE.test(lower)) {
     return { kind: "video", src: url, provider: "direct", providerLabel: label("direct") };

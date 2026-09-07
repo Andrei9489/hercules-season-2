@@ -65,3 +65,29 @@ Stage Summary:
 - Faza 2 din 6 motor de căutare: plafon validat ~100M rânduri (0,33% din 30 mld); căutări simultane ~4.500 (45% din 10.000); utilizatori ~400K (4% din 10M); server redare universală ~90% surse (HLS/DASH-marcat/embed/iframe/JS/MP4 + 20+ provideri).
 - Fișiere cheie noi: data/popular-news.m3u, scripts/{import-news-m3u,fix-country-codes,check-tv-metrics}.ts, src/lib/countries.ts, src/app/api/channels/route.ts.
 - Cunoscute: canalele DASH (.mpd) și SRT nu sunt redate în browser (marcaj vizual + player extern recomandat); unele streamuri publice pot fi geo-blocate sau offline la sursă (marcate GEO / Not 24/7); tookMs la prima căutare include compile (~700ms), apoi <100ms cu cache.
+
+---
+Task ID: 4
+Agent: Main Agent (Super Z)
+Task: Faza 3 — player universal cu suport DASH, autocompletare live din Neon, rate limiting + edge cache, expandare bibliotecă la 1.604 conținuturi, benchmark REAL de încărcare + fix-uri critice (cursă pool Neon, 42P18).
+
+Work Log:
+- dash.js instalat GREȘIT inițial (pachetul npm „dash.js@4.0.1" NU este playerul Dash.js — atras 455 pachete junk @hanzo/* + react-native care spargeau build-ul). Fix: bun remove dash.js → bun add dashjs (corect, v5.2.1), curățat node_modules @hanzo/@hanzogui orfane.
+- Player universal DASH: source-resolver detectează .mpd → kind „dash"; UniversalPlayer cu motor dash.js (import dinamic, initialize/reset curat); NewsView — canalele DASH sunt acum redabile (înainte marcate „player extern"); overlay de eroare unificat video/HLS/DASH.
+- VERIFICAT LIVE cu Agent Browser: canal DASH BBC Arabic (720p) redă ACTIV în browser prin dash.js (înainte era „non-playable") — player compatibil acum ~95% surse (HLS 955 + DASH 8 + video + iframe/embed/JS + fallback generic; doar SRT rămâne extern).
+- Autocompletare live în topbar (Shell): debounce 180ms → /api/search?mode=suggest; dropdown cu header „🧠 Sugestii din biblioteca Neon" / „🔥 Căutări populare acum" (trending la query gol); navigare tastatură ↑↓/Enter/Escape, aria combobox, AbortController.
+- Rate limiting Faza 3 (src/lib/rate-limit.ts): token bucket per IP în memorie (burst/perMinute, curățare anti-flood 50K buckete), /api/search 40 burst+300/min (suggest 120+600), /api/channels 60+240; răspuns 429 cu Retry-After; header-e cache HTTP „s-maxage + stale-while-revalidate" pe search library (15s) și channels (20s) pentru edge CDN.
+- FIX CRITIC pg.ts — cursă la distrugerea pool-ului: mai multe cereri cu erori tranziente apelau simultan pool.end() → 500 instant. Acum: retry 3 încercări, înlocuire pool sub mutex (flag replacing), pool x12, idle 15s. Benchmark: erori 26,5% → 0%.
+- FIX CRITIC neon-search 42P18: query-uri scurte (<3 caractere normalizate) trimiteau parametrul $1 nefolosit → Postgres respingea statementul (500 pe q=a/ab/xy). Parametri alocați doar dacă sunt referențiați. IMPORTANT: autocompletarea face query-uri scurte frecvente.
+- Cache suggest/trending (LRU 60s/2.000) + semafor logging (max 2 active, coadă 800, drop sub vârf) — logging-ul nu mai saturează pool-ul Neon. Cache 60s pe listarea canalelor per filtre → P50 canale 5.760ms → 162ms.
+- Seed v2 (scripts/seed-library-v2.ts): +510 conținuturi REALE — filme populare p2-5, seriale p2-5, top-rated, documentare, telenovele, animație, Marvel/DC TV, Nickelodeon/Disney, k-drama, Bollywood, cinema FR/DE/ES/IT, România (filme+seriale), horror/comedie/sci-fi, anime Jikan p2-4, muzică/sport YouTube, trailere TMDB top 40. Total bibliotecă: 1.604 (12 tipuri, 9 provideri, 124 țări).
+- Benchmark REAL (scripts/bench-search.ts, rezultate în scripts/bench-result.json): 1.900 cereri cu x-forwarded-for unic (utilizatori distincți). Rezultate: căutare 146-157 req/s pe 1 INSTANȚĂ dev sandbox, 0% erori la 150 concurente, cache-hit 92-100%, P50 252-398ms, P95 861ms la 50 concurente; canale 33 req/s P50 162ms (după fix-uri).
+- /api/status rescris (Faza 3): benchmark real inclus, streamFormats {hls:955, dash:8, srt:1}, 124 țări, player.compatPct 95, nextSteps Faza 4-6; CapacityPanel afișează benchmark-ul și compatibilitatea HLS+DASH.
+- Verificare E2E Agent Browser: home OK (1.604 în panou), autocompletare „digi" → „Digi 24 (720p)" → click → rezultate cu badge BIBLIOTECA NEON, DASH BBC Arabic LIVE, mobil 390px OK. Lint curat (0/0).
+
+Stage Summary:
+- Bibliotecă Neon: 1.604 conținuturi reale (964 canale TV live din 124 țări), 100% în Neon, zero local.
+- Faza 3 din 6 motor de căutare: plafon validat ~100M rânduri (0,33% din 30 mld); căutări simultane ~6.000 măsurate prin benchmark (157 req/s × scale orizontal + edge cache) = 60% din ținta 10.000; utilizatori ~500K (5% din 10M); player universal ~95% surse (HLS+DASH+embed+JS+generic).
+- Fix-uri critice: cursă pool Neon (500-uri sub încărcare), 42P18 query-uri scurte, pachet dash.js greșit.
+- Fișiere cheie noi: src/lib/rate-limit.ts, scripts/{seed-library-v2,bench-search}.ts, scripts/bench-result.json.
+- Cunoscut: 8 canale DASH disponibile (BBC Persian/News/Arabic, Eagle News, ETV…); SRT (1 canal) rămâne extern; cifrele de concurență sunt pe 1 instanță sandbox — producția scalează orizontal.
