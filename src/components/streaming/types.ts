@@ -49,16 +49,24 @@ export type CapacityStatus = {
   db: {
     provider: string; region: string; size: string;
     partitions: number; indexes: number; stateless: boolean; zeroLocal: boolean;
+    readReplica?: boolean; readPoolMax?: number; note?: string;
   };
   library: {
     items: number; types: number; providers: number; liveTvChannels?: number;
+    radioStations?: number;
     countries?: number; streamFormats?: Record<string, number>;
   };
   search: {
     logsTotal: number; logs24h: number; avgMs: number | null;
     top: { original: string; hits: number }[];
     cacheL2?: { enabled: boolean; ttlSec: number; shared: boolean; note: string };
-    suggest?: { coveringIndex: boolean; l2TtlSec: number; coalescing: boolean; originMs: number; note: string };
+    suggest?: {
+      coveringIndex: boolean; l2TtlSec: number; coalescing: boolean; originMs: number;
+      rollup?: {
+        buckets: number; prefixLens: string; topPerBucket: number;
+        rankedBy: string; staleAfterMin: number; note: string;
+      };
+    };
   };
   player?: { compatPct: number; engines: string[] };
   benchmark?: {
@@ -69,6 +77,7 @@ export type CapacityStatus = {
     suggest150?: { rps: number; p50Ms: number };
     suggest300?: { rps: number; p50Ms: number; errors: number };
     channels?: { rps: number; p50Ms: number };
+    radio?: { rps: number; p50Ms: number };
   };
   capacity: {
     engine: { pct: number; validatedRows: number; target: number; phase: number; nextSteps: string[] };
@@ -199,4 +208,4 @@ export type DetailData = MediaItem & {
 export type ViewKey =
   | "acasa" | "filme" | "seriale" | "anime" | "muzica" | "copii"
   | "sport" | "gaming" | "documentare" | "telenovele" | "stiri"
-  | "fun" | "lista" | "search" | "universuri" | "showbiz";
+  | "fun" | "lista" | "search" | "universuri" | "showbiz" | "radio";

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSession, signOut, signIn } from "next-auth/react";
 import {
   Home, Film, Tv, Sparkles, Music2, Baby, Trophy, Gamepad2,
-  Globe2, Heart, Newspaper, Laugh, Bookmark, Search, Menu, X, LogIn, LogOut, User,
+  Globe2, Heart, Newspaper, Laugh, Bookmark, Search, Menu, X, LogIn, LogOut, User, Radio,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -28,6 +28,7 @@ import { MyListView } from "./MyListView";
 import { SearchView } from "./SearchView";
 import { UniversuriView } from "./UniversuriView";
 import { ShowbizView } from "./ShowbizView";
+import { RadioView } from "./RadioView";
 import { DetailModal } from "./DetailModal";
 import { PlayerModal } from "./PlayerModal";
 
@@ -43,6 +44,7 @@ const NAV: { key: ViewKey; label: string; icon: typeof Home; group: string }[] =
   { key: "sport", label: "Sport", icon: Trophy, group: "Live" },
   { key: "gaming", label: "Gaming", icon: Gamepad2, group: "Live" },
   { key: "stiri", label: "Știri", icon: Newspaper, group: "Live" },
+  { key: "radio", label: "Radio Live", icon: Radio, group: "Live" },
   { key: "fun", label: "Distracție", icon: Laugh, group: "Live" },
   { key: "lista", label: "Lista Mea", icon: Bookmark, group: "Cont" },
 ];
@@ -557,6 +559,7 @@ export function Shell() {
         {view === "sport" && <SportsView />}
         {view === "gaming" && <GamingView />}
         {view === "stiri" && <NewsView key={`stiri-${newsContinent}`} initialContinent={newsContinent} />}
+        {view === "radio" && <RadioView />}
         {view === "fun" && <FunView />}
         {view === "universuri" && (
           <UniversuriView key={`uni-${universuriTab}`} initialTab={universuriTab} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />

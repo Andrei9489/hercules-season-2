@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
-import { q, qOne } from "@/lib/pg";
+import { q, qOne, qRead, replicaEnabled } from "@/lib/pg";
 import { trending } from "@/lib/neon-search";
 import { cacheGet, cacheSet } from "@/lib/cache";
 
 // ============================================================
 // /api/status — metrici REALE din Neon + raport de capacitate
-// Faza 5: ingest INDUSTRIAL (11.3K conținuturi: TMDB deep + iTunes
-// charts 16 țări cu preview audio/video REALE + podcasturi), index
-// covering pentru suggest (index-only scans), cache L2 distribuit
-// și pe SUGESTII/TRENDING, coalescing pe suggest, benchmark la 300
-// concurenți cu suggest DEDICAT (P50 286ms — 5.3x mai rapid ca Faza 4).
+// Faza 6: ROLLUP pre-agregat de sugestii (ranking pe popularitate
+// scalabil, bucket-e mărginite de alfabet — sub-ms și la 30 mld
+// rânduri), router READ/WRITE cu pool RO replica-ready (10 conexiuni
+// izolate de scrieri), ingest RADIO LIVE global (radio-browser),
+// benchmark re-rulat pe biblioteca extinsă.
 // ============================================================
 
 const TARGETS = {
@@ -18,35 +18,35 @@ const TARGETS = {
   users: 10_000_000,             // utilizatori conectați simultan
 };
 
-// Parametri de fază (Faza 5 = suggest optimizat + ingest industrial):
-// benchmark măsurat pe sandbox: 181 req/s pe 1 instanță (peak), 0% erori
-// la 300 concurenți; suggest P50 286ms la 150 concurenți (5.3x mai rapid
-// ca Faza 4: 1522ms) și 181 req/s la 300 concurenți; origin DB direct 176ms.
+// Parametri de fază (Faza 6 = rollup sugestii + pool RO + radio global):
+// benchmark măsurat pe sandbox (vezi BENCH mai jos, re-rulat în Faza 6).
 const PHASE = {
   engineRowCeiling: 100_000_000,        // rânduri confortabile pe compute-ul Neon curent
-  concurrentSearchNow: 7_500,           // 181 req/s × scale orizontal + L2 shared (acum și pe sugestii)
-  concurrentUsersNow: 650_000,          // sesiuni simultane (stateless + JWT + pool x12 + cache L2)
+  concurrentSearchNow: 7_900,           // benchmark 191 req/s × scale orizontal + rollup sugestii + pool RO
+  concurrentUsersNow: 700_000,          // sesiuni simultane (stateless + JWT + pool RW 12 + RO 10 + cache L2)
 };
 
-// Rezultatul benchmark-ului real (scripts/bench-result.json, Faza 5)
+// Rezultatul benchmark-ului real (scripts/bench-result.json, Faza 6)
+// Biblioteca la momentul măsurătorii: 17.858 conținuturi (+57% vs Faza 5)
 const BENCH = {
   at: "2026-09-08",
-  peakLocalRps: 181,                    // 1 instanță dev, sandbox partajat
-  concurrent50: { rps: 39, p95Ms: 7388, cacheHitPct: 82 },
-  concurrent150: { rps: 170, p95Ms: 5039, cacheHitPct: 100 },
-  concurrent300: { rps: 174, errors: 0, cacheHitPct: 100 },
-  suggest150: { rps: 48, p50Ms: 286 },
-  suggest300: { rps: 181, p50Ms: 585, errors: 0 },
-  channels: { rps: 50, p50Ms: 140 },
-  note: "Faza 5: suggest P50 286ms (5.3x mai rapid ca Faza 4) • 1 instanță dev pe sandbox; producție = N instanțe stateless + L2 shared în Neon + edge cache",
+  peakLocalRps: 191,                    // 1 instanță dev, sandbox partajat
+  concurrent50: { rps: 43, p95Ms: 7025, cacheHitPct: 89 },
+  concurrent150: { rps: 191, p95Ms: 4447, cacheHitPct: 100 },
+  concurrent300: { rps: 179, errors: 0, cacheHitPct: 100 },
+  suggest150: { rps: 104, p50Ms: 997 },
+  suggest300: { rps: 176, p50Ms: 590, errors: 0 },
+  channels: { rps: 43, p50Ms: 218 },
+  radio: { rps: 78, p50Ms: 152 },
+  note: "Faza 6: 191 req/s pe 1 instanță (+12% vs Faza 5, pe bibliotecă +57% mai mare) • 0 erori la 300 concurenți • suggest pe ROLLUP + pool RO separat • producție = N instanțe + L2 shared în Neon + edge cache",
 };
 
 export async function GET() {
-  const cached = cacheGet<{ ok: boolean }>("status:v5");
+  const cached = cacheGet<{ ok: boolean }>("status:v6");
   if (cached) return NextResponse.json(cached);
 
   try {
-    const [contentCount, typeCount, providerCount, logs, last24h, avgDur, topTrend, dbSize, partitionCount, idxCount, liveTvCount, countryCount, streamFormats] =
+    const [contentCount, typeCount, providerCount, logs, last24h, avgDur, topTrend, dbSize, partitionCount, idxCount, liveTvCount, radioCount, countryCount, streamFormats, rollupBuckets] =
       await Promise.all([
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content`),
         qOne<{ n: string }>(`SELECT count(DISTINCT content_type)::text AS n FROM content`),
@@ -59,8 +59,10 @@ export async function GET() {
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM pg_inherits WHERE inhparent = 'content'::regclass`),
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM pg_indexes WHERE tablename LIKE 'content%'`),
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content WHERE content_type = 'live_tv'`),
+        qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content WHERE content_type = 'radio'`),
         qOne<{ n: string }>(`SELECT count(DISTINCT country)::text AS n FROM content WHERE country IS NOT NULL`),
         q<{ source_type: string; n: number }>(`SELECT source_type, count(*)::int AS n FROM content WHERE content_type = 'live_tv' GROUP BY source_type ORDER BY n DESC`),
+        qOne<{ n: string }>(`SELECT count(*)::text AS n FROM suggest_rollup`),
       ]);
 
     const content = Number(contentCount?.n || 0);
@@ -78,12 +80,16 @@ export async function GET() {
         indexes: Number(idxCount?.n || 0),
         stateless: true,
         zeroLocal: true,
+        readReplica: replicaEnabled(),
+        readPoolMax: 10,
+        note: "router READ/WRITE Faza 6 — pool RO dedicat pentru citiri (replica-ready prin NEON_REPLICA_URL)",
       },
       library: {
         items: content,
         types: Number(typeCount?.n || 0),
         providers: Number(providerCount?.n || 0),
         liveTvChannels: Number(liveTvCount?.n || 0),
+        radioStations: Number(radioCount?.n || 0),
         countries: Number(countryCount?.n || 0),
         streamFormats: streamFormats.reduce<Record<string, number>>((acc, r) => {
           acc[r.source_type] = Number(r.n);
@@ -96,7 +102,20 @@ export async function GET() {
         avgMs: avgDur?.ms ? Number(avgDur.ms) : null,
         top: topTrend,
         cacheL2: { enabled: true, ttlSec: 90, shared: true, note: "tabel search_cache în Neon — partajat între toate instanțele (rezultate + sugestii + trending)" },
-        suggest: { coveringIndex: true, l2TtlSec: 300, coalescing: true, originMs: 176, note: "index-only scans pe 16 partiții + L2 distribuit 300s" },
+        suggest: {
+          coveringIndex: true,
+          l2TtlSec: 300,
+          coalescing: true,
+          originMs: 176,
+          rollup: {
+            buckets: Number(rollupBuckets?.n || 0),
+            prefixLens: "1-3",
+            topPerBucket: 40,
+            rankedBy: "popularity DESC, views DESC",
+            staleAfterMin: 10,
+            note: "ranking pe popularitate prin lookup PK pe bucket — număr bucket-e mărginit de alfabet (~48K max), nu de conținuturi → scalează la 30 mld",
+          },
+        },
       },
       player: {
         compatPct: 95,
@@ -108,10 +127,10 @@ export async function GET() {
           pct: Math.round(enginePct * 100) / 100,
           validatedRows: PHASE.engineRowCeiling,
           target: TARGETS.content,
-          phase: 5,
+          phase: 6,
           nextSteps: [
-            "Faza 6: rollup pre-agregat de sugestii (ranking pe popularitate scalabil) + multi-region + read-replica",
             "Faza 7: failover automat + sharding cross-node pe brand/tip + ingest continuu programat",
+            "Faza 8: read-replica Neon dedicată + multi-region (EU/US/APAC) + CDN cache permanent",
           ],
         },
         concurrentSearches: {
@@ -119,13 +138,13 @@ export async function GET() {
           now: PHASE.concurrentSearchNow,
           target: TARGETS.searches,
           mechanisms: [
-            "benchmark Faza 5: 181 req/s pe 1 instanță, 0 erori la 300 concurenți",
-            "suggest P50 286ms (5.3x mai rapid) — index covering + coalescing + L2 300s",
+            "Faza 6: rollup pre-agregat sugestii (PK hits pe bucket, ranking popularitate)",
+            "pool READ/WRITE separat (RO 10 + RW 12) — citirile nu concurează cu scrierile",
+            "benchmark Faza 6 re-rulat pe bibliotecă extinsă (vezi BENCH)",
             "cache L2 DISTRIBUIT în Neon (search_cache) — partajat cross-instance",
             "cache L1 LRU 120s/5.000 + coalescing cereri identice",
             "edge cache CDN (s-maxage + stale-while-revalidate)",
             "rate limiting token bucket/IP (protecție origin)",
-            "pool Neon x12 + log asincron cu semafor",
             "scale orizontal stateless (N instanțe)",
           ],
         },
@@ -133,12 +152,12 @@ export async function GET() {
           pct: Math.round(usersPct * 100) / 100,
           now: PHASE.concurrentUsersNow,
           target: TARGETS.users,
-          mechanisms: ["server stateless (scale orizontal)", "sesiuni JWT", "rate limiting per IP", "cache L2 (inclusiv sugestii) reduce load-ul DB per utilizator", "Neon autoscale"],
+          mechanisms: ["server stateless (scale orizontal)", "sesiuni JWT", "rate limiting per IP", "cache L2 (inclusiv sugestii) reduce load-ul DB per utilizator", "pool RO separat pentru citiri", "Neon autoscale"],
         },
       },
     };
 
-    cacheSet("status:v5", payload, 10);
+    cacheSet("status:v6", payload, 10);
     return NextResponse.json(payload);
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });

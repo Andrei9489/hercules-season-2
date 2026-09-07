@@ -6,8 +6,9 @@ import { countryName } from "@/lib/countries";
 import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
 
 // ============================================================
-// /api/channels — canale TV live (Popular News) din Neon
-// ?q= &country= &continent= &limit= &offset=
+// /api/channels — canale TV live (Popular News) + RADIO LIVE din Neon
+// ?q= &country= &continent= &limit= &offset= &type=live_tv|radio
+// Faza 6: type=radio → posturi radio (radio-browser) cu bitrate/codec
 // ============================================================
 
 export type ChannelRow = {
@@ -26,6 +27,8 @@ export type ChannelRow = {
   quality: string | null;
   geoBlocked: boolean;
   not247: boolean;
+  codec?: string | null;
+  bitrate?: number | null;
 };
 
 export async function GET(req: NextRequest) {
@@ -37,14 +40,15 @@ export async function GET(req: NextRequest) {
   const qRaw = sp.get("q")?.trim() || "";
   const country = sp.get("country")?.trim() || "";
   const continent = sp.get("continent")?.trim() || "";
+  const contentType = sp.get("type") === "radio" ? "radio" : "live_tv";
   const limit = Math.min(120, Math.max(12, Number(sp.get("limit")) || 48));
   const offset = Math.max(0, Number(sp.get("offset")) || 0);
 
   try {
-    // ---- facet: țări cu număr de canale (cache 10 min) ----
+    // ---- facet: țări cu număr de canale (cache 10 min, per tip) ----
     let countries: { code: string; name: string; n: number }[] = [];
     let totalAll = 0;
-    const facetKey = "channels:facet:v1";
+    const facetKey = `channels:facet:v2:${contentType}`;
     const cachedFacet = cacheGet<{ countries: typeof countries; totalAll: number }>(facetKey);
     if (cachedFacet) {
       countries = cachedFacet.countries;
@@ -53,10 +57,11 @@ export async function GET(req: NextRequest) {
       const [facetRows, totalRow] = await Promise.all([
         q<Record<string, unknown>>(
           `SELECT country, count(*)::int AS n FROM content
-           WHERE content_type = 'live_tv' AND country IS NOT NULL
-           GROUP BY country ORDER BY n DESC`
+           WHERE content_type = $1 AND country IS NOT NULL
+           GROUP BY country ORDER BY n DESC`,
+          [contentType]
         ),
-        qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content WHERE content_type = 'live_tv'`),
+        qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content WHERE content_type = $1`, [contentType]),
       ]);
       countries = facetRows.map((r) => ({
         code: String(r.country),
@@ -68,7 +73,7 @@ export async function GET(req: NextRequest) {
     }
 
     // ---- interogare principală (Faza 3: cache 60s per combinație de filtre) ----
-    const listKey = `chan:list:${qRaw}:${country}:${continent}:${limit}:${offset}`;
+    const listKey = `chan:list:${contentType}:${qRaw}:${country}:${continent}:${limit}:${offset}`;
     const cachedList = cacheGet<{ items: ChannelRow[]; filteredTotal: number }>(listKey);
 
     let items: ChannelRow[];
@@ -85,7 +90,7 @@ export async function GET(req: NextRequest) {
       p++;
       return `$${p}`;
     };
-    let where = `content_type = 'live_tv'`;
+    let where = `content_type = ${next(contentType)}`;
     if (country) where += ` AND country = ${next(country.toLowerCase())}`;
     if (continent) where += ` AND continent = ${next(continent)}`;
     if (qRaw) {
@@ -97,7 +102,11 @@ export async function GET(req: NextRequest) {
     const rows = await q<Record<string, unknown>>(
       `SELECT id, title, description, thumbnail, provider, source_type, source_url,
               country, continent, category, popularity, views,
-              meta_quality AS quality, meta_geo AS "geoBlocked", meta_not247 AS "not247"
+              COALESCE(meta_quality, CASE WHEN meta ? 'bitrate' THEN (meta->>'bitrate') || ' kbps' END) AS quality,
+              COALESCE(meta_geo, false) AS "geoBlocked",
+              COALESCE(meta_not247, false) AS "not247",
+              meta->>'codec' AS codec,
+              meta->>'bitrate' AS bitrate
        FROM content
        WHERE ${where}
        ORDER BY popularity DESC, title ASC
@@ -128,6 +137,8 @@ export async function GET(req: NextRequest) {
       quality: (r.quality as string) || null,
       geoBlocked: Boolean(r.geoBlocked),
       not247: Boolean(r.not247),
+      codec: (r.codec as string) || null,
+      bitrate: r.bitrate ? Number(r.bitrate) : null,
     }));
     filteredTotal = ft ? Number(ft.n) : totalAll;
     cacheSet(listKey, { items, filteredTotal }, 60);

@@ -1,13 +1,15 @@
 // ============================================================
-// Motor de căutare StreamVerse — strat Neon (Faza 5)
+// Motor de căutare StreamVerse — strat Neon (Faza 6)
 // Arhitectură: FTS (tsvector GIN) + trigram (pg_trgm GIN) pe tabel
 // partiționat HASH x16, ranking hibrid, cache L2 DISTRIBUIT în Neon
 // (partajat cross-instance) PENTRU REZULTATE + SUGESTII + TRENDING,
-// index covering pentru autocompletare (index-only scans), cache LRU
-// la cald, logging asincron în search_logs + search_stats.
+// index covering pentru autocompletare (index-only scans), ROLLUP
+// pre-agregat pentru ranking pe POPULARITATE la prefixe scurte,
+// router READ/WRITE (pool RO replica-ready), cache LRU la cald,
+// logging asincron în search_logs + search_stats.
 // Țintă finală: 30 miliarde itemi • 10.000 căutări simultane.
 // ============================================================
-import { q, qOne } from "./pg";
+import { q, qOne, qRead } from "./pg";
 
 /** Normalizează text RO/EN: fără diacritice, lowercase, doar [a-z0-9 spații]. */
 export function normalizeRo(s: string): string {
@@ -55,7 +57,7 @@ const L2_TTL_TREND_SEC = 120;
 
 async function l2Get<T>(key: string, ttlSec: number = L2_TTL_SEC): Promise<T | null> {
   try {
-    const rows = await q<{ payload: unknown }>(
+    const rows = await qRead<{ payload: unknown }>(
       `SELECT payload FROM search_cache
        WHERE key = $1 AND created_at > now() - ($2 || ' seconds')::interval`,
       [key, String(ttlSec)]
@@ -151,6 +153,7 @@ export async function searchLibrary(
 
   if (!norm) {
     // Fără query — listează cele mai populare (index pe popularity DESC)
+    // Faza 6: citire pe pool-ul RO (izolare de scrieri)
     let where = "TRUE";
     const params: unknown[] = [];
     if (type) {
@@ -165,7 +168,7 @@ export async function searchLibrary(
     where += ` ORDER BY popularity DESC, id DESC LIMIT $${params.length}`;
     params.push(offset);
     where += ` OFFSET $${params.length}`;
-    const rows = await q<Record<string, unknown>>(`SELECT * FROM content WHERE ${where}`, params);
+    const rows = await qRead<Record<string, unknown>>(`SELECT * FROM content WHERE ${where}`, params);
     return { hits: rows.map(mapHit), tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
   }
 
@@ -236,7 +239,7 @@ export async function searchLibrary(
     ORDER BY score DESC, popularity DESC, id DESC
     LIMIT ${next(limit)} OFFSET ${next(offset)}`;
 
-  const rows = await q<Record<string, unknown>>(sql, params);
+  const rows = await qRead<Record<string, unknown>>(sql, params);
   const hits = rows.map(mapHit);
   cacheSet(cacheKey, hits);
   void l2Set(cacheKey, hits).then(() => l2CleanupMaybe()); // L2 write-behind
@@ -282,9 +285,13 @@ function mapHit(r: Record<string, unknown>): LibraryHit {
 // Faza 3: cache LRU propriu pentru suggest/trending (prefixele se repetă
 // masiv la autocompletare → sub-1ms la cald, zero load pe Neon)
 // Faza 5: + cache L2 DISTRIBUIT în Neon (300s, partajat cross-instance)
-// + ranking după POPULARITATE (nu alfabetic) prin index covering
-// idx_content_suggest (search_text text_pattern_ops INCLUDE title,popularity)
-// → index-only scans pe toate cele 16 partiții hash.
+// + index covering idx_content_suggest (index-only scans pe 16 partiții)
+// Faza 6: ROLLUP PRE-AGREGAT (tabel suggest_rollup) — pentru prefixe de
+// 1-3 caractere, ranking pe POPULARITATE devine un simplu lookup PK pe
+// bucket (top-40 titluri ordonate pop/views/titlu, recalculat de job de
+// fundal). Numărul de bucket-e e mărginit de alfabet (~48K), NU de
+// numărul de conținuturi → scalează la 30 miliarde rânduri. Prefixe
+// lungi (≥4) rămân pe index-only scan cu early termination.
 const SUG_TTL_MS = 120_000;
 const SUG_MAX = 3_000;
 const sugCache = new Map<string, { exp: number; data: unknown }>();
@@ -329,13 +336,47 @@ export async function suggest(prefix: string, limit = 7): Promise<string[]> {
       return l2;
     }
 
-    // Ranking alfabetic cu EARLY TERMINATION pe Merge Append — index covering
-    // idx_content_suggest (index-only scans, ≤7 rânduri per partiție).
-    // NOTĂ Faza 5: ranking-ul pe popularitate (GROUP BY max(pop)) forțează
-    // agregare completă pe toate partițiile (fără oprire timpurie) — o capcană
-    // la miliarde de rânduri. Faza 6: tabelă rollup pre-agregată de sugestii
-    // pentru ranking pe popularitate scalabil.
-    const rows = await q<{ title: string }>(
+    const bucketKey = norm.slice(0, 3);
+
+    // ===== Faza 6: ROLLUP (prefixe 1-3) — ranking pe POPULARITATE =====
+    if (bucketKey.length <= 3) {
+      const rows = await qRead<{ titles: string[]; stale: boolean }>(
+        `SELECT titles,
+                (refreshed_at < now() - interval '10 minutes') AS stale
+         FROM suggest_rollup WHERE prefix_key = $1`,
+        [bucketKey]
+      );
+      const row = rows[0];
+      if (row && Array.isArray(row.titles) && row.titles.length > 0) {
+        // stale-while-revalidate: intoarcem datele vechi imediat,
+        // refresh-ul bucketului pleacă asincron (nu blochează cererea)
+        if (row.stale) void refreshSuggestBucket(bucketKey);
+        const titles = row.titles.slice(0, limit);
+        sugSet(key, titles);
+        void l2Set(key, titles);
+        return titles;
+      }
+      // bucket lipsă (prefix nou-făcut / prima cerere): calcul țintit pe
+      // bucketul exact + materializare în rollup (următoarele cereri → PK hit)
+      const fresh = await refreshSuggestBucket(bucketKey);
+      if (fresh.length > 0) {
+        const titles = fresh.slice(0, limit);
+        sugSet(key, titles);
+        void l2Set(key, titles);
+        return titles;
+      }
+      // zero potriviri — caching negativ scurt ca să nu batem la fiecare tastă
+      sugSet(key, []);
+      return [];
+    }
+
+    // ===== Prefixe lungi (≥4): index-only scan, ranking alfabetic cu
+    // EARLY TERMINATION pe Merge Append (≤limit rânduri per partiție).
+    // La ≥4 caractere problema popularității e mai puțin relevantă (util.
+    // a deja scris aproape tot cuvântul), iar agregarea completă pe 16
+    // partiții rămâne prohibitivă la miliarde de rânduri — rollup-ul pe
+    // bucket-e acoperă deja primul moment de decizie (primele 3 taste).=====
+    const rows = await qRead<{ title: string }>(
       `SELECT DISTINCT title FROM content
        WHERE search_text LIKE $1 || '%'
        ORDER BY title LIMIT $2`,
@@ -355,6 +396,36 @@ export async function suggest(prefix: string, limit = 7): Promise<string[]> {
   }
 }
 
+/**
+ * Faza 6: recalcularea unui SINGUR bucket rollup (țintit, ieftin) +
+ * materializare upsert. Returnează top-40 titluri noi ale bucketului.
+ */
+export async function refreshSuggestBucket(bucketKey: string): Promise<string[]> {
+  try {
+    const rows = await q<{ titles: string[] }>(
+      `INSERT INTO suggest_rollup (prefix_key, titles, item_count, refreshed_at)
+       SELECT $1,
+              COALESCE(jsonb_agg(title ORDER BY pop DESC, views DESC, title) FILTER (WHERE rn <= 40), '[]'::jsonb),
+              count(*) FILTER (WHERE rn <= 40),
+              now()
+       FROM (
+         SELECT title, popularity AS pop, views,
+                row_number() OVER (ORDER BY popularity DESC, views DESC, title ASC) AS rn
+         FROM content
+         WHERE search_text LIKE $1 || '%'
+           AND title IS NOT NULL AND title <> ''
+       ) b
+       ON CONFLICT (prefix_key) DO UPDATE
+         SET titles = EXCLUDED.titles, item_count = EXCLUDED.item_count, refreshed_at = now()
+       RETURNING titles`,
+      [bucketKey]
+    );
+    return Array.isArray(rows[0]?.titles) ? (rows[0].titles as string[]) : [];
+  } catch {
+    return []; // optim — sugestia cade pe L1/L2 sau pe path-ul vechi
+  }
+}
+
 export type TrendItem = { norm: string; original: string; hits: number };
 
 export async function trending(limit = 8): Promise<TrendItem[]> {
@@ -367,7 +438,7 @@ export async function trending(limit = 8): Promise<TrendItem[]> {
     sugSet(key, l2);
     return l2;
   }
-  const rows = await q<Record<string, unknown>>(
+  const rows = await qRead<Record<string, unknown>>(
     `SELECT norm, original, hits FROM search_stats ORDER BY hits DESC, last_at DESC LIMIT $1`,
     [limit]
   );

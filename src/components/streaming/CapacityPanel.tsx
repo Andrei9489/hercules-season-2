@@ -121,7 +121,7 @@ export function CapacityPanel() {
                 <div>
                   <p className="text-base font-black text-zinc-100">{st.library.types} tipuri • {st.library.providers} provideri</p>
                   <p className="text-[10px] text-zinc-500">
-                    compatibilitate surse: ~{st.player?.compatPct ?? 95}% — HLS + DASH + embed/JS (20+ platforme)
+                    🛰️ {st.library.liveTvChannels ?? "—"} canale TV • 📻 {st.library.radioStations ?? "—"} posturi radio • compat ~{st.player?.compatPct ?? 95}%
                   </p>
                 </div>
                 <div>
@@ -141,16 +141,21 @@ export function CapacityPanel() {
               {st.benchmark && (
                 <p className="mt-1 truncate text-[10px] text-zinc-600">
                   📊 Benchmark real (Faza {c.engine.phase}): {st.benchmark.peakLocalRps} req/s pe 1 instanță • 0 erori la{" "}
-                  {st.benchmark.concurrent300 ? "300" : "150"} concurenți • suggest P50{" "}
-                  {st.benchmark.suggest150?.p50Ms ?? "—"}ms (5.3x mai rapid) • cache L1+L2 distribuit{" "}
+                  {st.benchmark.concurrent300 ? "300" : "150"} concurenți • suggest 300x: {st.benchmark.suggest300?.rps ?? "—"} req/s •
+                  radio: {st.benchmark.radio ? `${st.benchmark.radio.rps} req/s (P50 ${st.benchmark.radio.p50Ms}ms)` : "—"} • cache L1+L2 distribuit{" "}
                   {st.search.cacheL2?.enabled ? "în Neon (cross-instance)" : ""} • cache-hit{" "}
                   {st.benchmark.concurrent300?.cacheHitPct ?? st.benchmark.concurrent150.cacheHitPct}%
                 </p>
               )}
               {st.search.suggest && (
                 <p className="mt-1 truncate text-[10px] text-zinc-600">
-                  ⚡ Autocompletare: index covering (index-only scans pe {st.db.partitions} partiții) • coalescing prefixe •
-                  L2 distribuit {st.search.suggest.l2TtlSec}s • origin DB {st.search.suggest.originMs}ms
+                  ⚡ Autocompletare: ROLLUP {st.search.suggest.rollup?.buckets ?? "—"} bucket-e (ranking POPULARITATE, lookup PK — Faza {c.engine.phase}) •
+                  index covering pe {st.db.partitions} partiții • coalescing prefixe • L2 distribuit {st.search.suggest.l2TtlSec}s • origin DB {st.search.suggest.originMs}ms
+                </p>
+              )}
+              {st.db.readPoolMax != null && (
+                <p className="mt-1 truncate text-[10px] text-zinc-600">
+                  🔀 Router READ/WRITE: pool citiri {st.db.readPoolMax} conexiuni {st.db.readReplica ? "(REPLICA dedicată activă)" : "(izolate de scrieri, replica-ready)"} • pool scrieri 12
                 </p>
               )}
             </div>

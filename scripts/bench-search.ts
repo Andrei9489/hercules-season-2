@@ -105,8 +105,12 @@ async function main() {
     "florin salam", "adele", "taylor swift", "podcast", "horror", "thriller",
     "sci-fi", "comedie", "drama", "western", "fantezie", "mister",
     "dizi", "nordic", "illumination", "dreamworks", "sony", "warner",
+    // Faza 6: radio live global
+    "kiss fm", "radio zu", "europa fm", "bbc radio 1", "nrj", "los40",
+    "capital fm", "heart", "radiant", "zet fm", "pro fm", "radio romania",
   ];
   const channelQs = ["news", "digi", "tv", "al jazeera", "sky", "cnn", "news24", "bbc"];
+  const radioQs = ["kiss", "radio", "fm", "bbc", "zu", "pop", "news", "rock"];
 
   const pick = (i: number) => titles[i % titles.length];
   const sp = (q: string) => `q=${encodeURIComponent(q)}&mode=library&limit=24`;
@@ -138,6 +142,9 @@ async function main() {
   await bench("E: căutare 300x", (i) => `/api/search?${sp(pick(i))}`, 1200, 300);
   // Faza 5: sugestii la 300 concurenți (după index covering + L2 pe sugestii)
   await bench("F: suggest 300x", (i) => `/api/search?mode=suggest&q=${encodeURIComponent(pick(i).slice(0, 4))}`, 900, 300);
+  // Faza 6: radio + suggest pe ROLLUP (prefixe scurte 2-3 caractere)
+  await bench("G: radio 50x", (i) => `/api/channels?type=radio&q=${encodeURIComponent(radioQs[i % radioQs.length])}&limit=48`, 200, 50);
+  await bench("H: suggest rollup 300x", (i) => `/api/search?mode=suggest&q=${encodeURIComponent(radioQs[i % radioQs.length].slice(0, 3))}`, 900, 300);
 
   console.log("\n" + "=".repeat(58));
   console.log("REZUMAT (necesar interpretării: 1 instanță dev pe sandbox):");
