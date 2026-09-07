@@ -58,6 +58,7 @@ export type CapacityStatus = {
     logsTotal: number; logs24h: number; avgMs: number | null;
     top: { original: string; hits: number }[];
     cacheL2?: { enabled: boolean; ttlSec: number; shared: boolean; note: string };
+    suggest?: { coveringIndex: boolean; l2TtlSec: number; coalescing: boolean; originMs: number; note: string };
   };
   player?: { compatPct: number; engines: string[] };
   benchmark?: {
@@ -65,6 +66,9 @@ export type CapacityStatus = {
     concurrent150: { rps: number; errors?: number; cacheHitPct: number; p95Ms?: number };
     concurrent50: { rps: number; p95Ms: number; cacheHitPct: number };
     concurrent300?: { rps: number; errors: number; cacheHitPct: number };
+    suggest150?: { rps: number; p50Ms: number };
+    suggest300?: { rps: number; p50Ms: number; errors: number };
+    channels?: { rps: number; p50Ms: number };
   };
   capacity: {
     engine: { pct: number; validatedRows: number; target: number; phase: number; nextSteps: string[] };

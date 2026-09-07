@@ -1,9 +1,11 @@
 // ============================================================
-// Benchmark REAL — motor de căutare StreamVerse (Faza 3)
+// Benchmark REAL — motor de căutare StreamVerse (Faza 5)
 // Măsoară pe /api/search (mode=library) și /api/channels:
 //   throughput (req/s), latență P50/P90/P95/P99, eroare, cache-hit.
 // Fiecare cerere folosește un x-forwarded-for unic (utilizatori
 // distincți) → parcurge și calea de rate-limiting.
+// Faza 5: sugestii testate și la 300 concurenți (după index covering
+// + cache L2 distribuit pe sugestii) + query-uri muzică/podcast.
 // Rulează: bun scripts/bench-search.ts
 // ============================================================
 
@@ -99,6 +101,10 @@ async function main() {
     "rtve", "bfm", "cnews", "newsmax", "zee", "ndtv", "arirang",
     "sintel", "tears of steel", "apple bipbop", "hls", "vimeo",
     "realitatea", "antena", "pro tv", "observator", "k-drama", "bollywood",
+    // Faza 5: muzică + podcasturi + genuri noi
+    "florin salam", "adele", "taylor swift", "podcast", "horror", "thriller",
+    "sci-fi", "comedie", "drama", "western", "fantezie", "mister",
+    "dizi", "nordic", "illumination", "dreamworks", "sony", "warner",
   ];
   const channelQs = ["news", "digi", "tv", "al jazeera", "sky", "cnn", "news24", "bbc"];
 
@@ -130,6 +136,8 @@ async function main() {
   await bench("D: suggest 150x", (i) => `/api/search?mode=suggest&q=${encodeURIComponent(pick(i).slice(0, 4))}`, 300, 150);
   // Faza 4: stres la 300 concurenți — validează L1+L2 distribuit sub vârf
   await bench("E: căutare 300x", (i) => `/api/search?${sp(pick(i))}`, 1200, 300);
+  // Faza 5: sugestii la 300 concurenți (după index covering + L2 pe sugestii)
+  await bench("F: suggest 300x", (i) => `/api/search?mode=suggest&q=${encodeURIComponent(pick(i).slice(0, 4))}`, 900, 300);
 
   console.log("\n" + "=".repeat(58));
   console.log("REZUMAT (necesar interpretării: 1 instanță dev pe sandbox):");

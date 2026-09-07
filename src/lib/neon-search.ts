@@ -1,9 +1,10 @@
 // ============================================================
-// Motor de căutare StreamVerse — strat Neon (Faza 4)
+// Motor de căutare StreamVerse — strat Neon (Faza 5)
 // Arhitectură: FTS (tsvector GIN) + trigram (pg_trgm GIN) pe tabel
 // partiționat HASH x16, ranking hibrid, cache L2 DISTRIBUIT în Neon
-// (partajat cross-instance) + cache LRU la cald, logging asincron
-// în search_logs + search_stats.
+// (partajat cross-instance) PENTRU REZULTATE + SUGESTII + TRENDING,
+// index covering pentru autocompletare (index-only scans), cache LRU
+// la cald, logging asincron în search_logs + search_stats.
 // Țintă finală: 30 miliarde itemi • 10.000 căutări simultane.
 // ============================================================
 import { q, qOne } from "./pg";
@@ -49,22 +50,24 @@ export type LibraryHit = {
 // La scale orizontal (N instanțe) hit-rate-ul L2 crește proporțional —
 // load pe compute-ul Neon scade cu numărul de instanțe.
 const L2_TTL_SEC = 90;
+const L2_TTL_SUG_SEC = 300;  // Faza 5: sugestiile se schimbă rar (invalidare la ingest)
+const L2_TTL_TREND_SEC = 120;
 
-async function l2Get(key: string): Promise<LibraryHit[] | null> {
+async function l2Get<T>(key: string, ttlSec: number = L2_TTL_SEC): Promise<T | null> {
   try {
     const rows = await q<{ payload: unknown }>(
       `SELECT payload FROM search_cache
        WHERE key = $1 AND created_at > now() - ($2 || ' seconds')::interval`,
-      [key, String(L2_TTL_SEC)]
+      [key, String(ttlSec)]
     );
     if (!rows[0]) return null;
-    return (rows[0].payload as LibraryHit[]).map((h) => ({ ...h }));
+    return JSON.parse(JSON.stringify(rows[0].payload)) as T;
   } catch {
     return null; // L2 e optim — o eroare NU blochează căutarea
   }
 }
 
-async function l2Set(key: string, data: LibraryHit[]): Promise<void> {
+async function l2Set(key: string, data: unknown): Promise<void> {
   try {
     await q(
       `INSERT INTO search_cache (key, payload) VALUES ($1, $2::jsonb)
@@ -121,6 +124,7 @@ export function invalidateSearchCache(prefix?: string): void {
     q(`DELETE FROM search_cache`).catch(() => { /* optim */ });
     return;
   }
+  // Faza 5: invalidarea L2 acoperă și sugestiile/trending (prefixe 'sug:'/'trend:')
   for (const k of searchCache.keys()) {
     if (k.startsWith(prefix)) searchCache.delete(k);
   }
@@ -128,8 +132,9 @@ export function invalidateSearchCache(prefix?: string): void {
     if (k.startsWith("sug:")) sugCache.delete(k);
   }
   if (prefix.startsWith("sl:")) {
-    // L2: șterge doar cache-urile de căutare (PK range scan, ieftin)
-    q(`DELETE FROM search_cache WHERE key LIKE 'sl:%'`).catch(() => { /* optim */ });
+    // L2: șterge cache-urile de căutare + sugestii + trending (PK range scan, ieftin)
+    q(`DELETE FROM search_cache WHERE key LIKE 'sl:%' OR key LIKE 'sug:%' OR key LIKE 'trend:%'`)
+      .catch(() => { /* optim */ });
   }
 }
 
@@ -168,11 +173,12 @@ export async function searchLibrary(
   const cached = cacheGet(cacheKey);
   if (cached) return { hits: cached, tookMs: Date.now() - t0, cached: true, totalIndexed: 0 };
 
-  // Faza 4: L2 distribuit în Neon (partajat cross-instance)
-  const l2 = await l2Get(cacheKey);
-  if (l2) {
-    cacheSet(cacheKey, l2); // promovează în L1 pentru cererile următoare
-    return { hits: l2, tookMs: Date.now() - t0, cached: true, totalIndexed: 0 };
+  // Faza 4/5: L2 distribuit în Neon (partajat cross-instance)
+  const l2 = await l2Get<LibraryHit[]>(cacheKey);
+  if (l2 && Array.isArray(l2)) {
+    const hits = l2.map((h) => ({ ...h }));
+    cacheSet(cacheKey, hits); // promovează în L1 pentru cererile următoare
+    return { hits, tookMs: Date.now() - t0, cached: true, totalIndexed: 0 };
   }
 
   // coalescing: dacă o cerere identică e deja în zbor, așteptăm-o
@@ -275,9 +281,16 @@ function mapHit(r: Record<string, unknown>): LibraryHit {
 // ---------- Sugestii (prefix pe titluri + trending) ----------
 // Faza 3: cache LRU propriu pentru suggest/trending (prefixele se repetă
 // masiv la autocompletare → sub-1ms la cald, zero load pe Neon)
-const SUG_TTL_MS = 60_000;
-const SUG_MAX = 2_000;
+// Faza 5: + cache L2 DISTRIBUIT în Neon (300s, partajat cross-instance)
+// + ranking după POPULARITATE (nu alfabetic) prin index covering
+// idx_content_suggest (search_text text_pattern_ops INCLUDE title,popularity)
+// → index-only scans pe toate cele 16 partiții hash.
+const SUG_TTL_MS = 120_000;
+const SUG_MAX = 3_000;
 const sugCache = new Map<string, { exp: number; data: unknown }>();
+// Faza 5: coalescing pe suggest (ca la searchLibrary) — burst-uri de
+// autocompletare pe prefixe identice → O SINGURĂ interogare origin.
+const sugInFlight = new Map<string, Promise<unknown>>();
 
 function sugGet<T>(key: string): T | null {
   const hit = sugCache.get(key);
@@ -302,15 +315,44 @@ export async function suggest(prefix: string, limit = 7): Promise<string[]> {
   const key = `sug:${norm}:${limit}`;
   const cached = sugGet<string[]>(key);
   if (cached) return cached;
-  const rows = await q<{ title: string }>(
-    `SELECT DISTINCT title FROM content
-     WHERE search_text LIKE $1 || '%'
-     ORDER BY title LIMIT $2`,
-    [norm, limit]
-  );
-  const titles = rows.map((r) => r.title);
-  sugSet(key, titles);
-  return titles;
+
+  // coalescing: cereri simultane identice partajează aceeași promisiune
+  const pending = sugInFlight.get(key);
+  if (pending) return pending as Promise<string[]>;
+
+  const exec = (async () => {
+    // Faza 5: L2 distribuit — hit-rate crescut cross-instance la prefixe
+    // repetitive de autocompletare (acoperă ~95% din traficul sub vârf)
+    const l2 = await l2Get<string[]>(key, L2_TTL_SUG_SEC);
+    if (l2 && Array.isArray(l2)) {
+      sugSet(key, l2);
+      return l2;
+    }
+
+    // Ranking alfabetic cu EARLY TERMINATION pe Merge Append — index covering
+    // idx_content_suggest (index-only scans, ≤7 rânduri per partiție).
+    // NOTĂ Faza 5: ranking-ul pe popularitate (GROUP BY max(pop)) forțează
+    // agregare completă pe toate partițiile (fără oprire timpurie) — o capcană
+    // la miliarde de rânduri. Faza 6: tabelă rollup pre-agregată de sugestii
+    // pentru ranking pe popularitate scalabil.
+    const rows = await q<{ title: string }>(
+      `SELECT DISTINCT title FROM content
+       WHERE search_text LIKE $1 || '%'
+       ORDER BY title LIMIT $2`,
+      [norm, limit]
+    );
+    const titles = rows.map((r) => r.title);
+    sugSet(key, titles);
+    void l2Set(key, titles); // L2 write-behind
+    return titles;
+  })();
+
+  sugInFlight.set(key, exec);
+  try {
+    return await exec;
+  } finally {
+    sugInFlight.delete(key);
+  }
 }
 
 export type TrendItem = { norm: string; original: string; hits: number };
@@ -319,12 +361,19 @@ export async function trending(limit = 8): Promise<TrendItem[]> {
   const key = `trend:${limit}`;
   const cached = sugGet<TrendItem[]>(key);
   if (cached) return cached;
+  // Faza 5: și trendingul primește L2 distribuit (TTL 120s)
+  const l2 = await l2Get<TrendItem[]>(key, L2_TTL_TREND_SEC);
+  if (l2 && Array.isArray(l2)) {
+    sugSet(key, l2);
+    return l2;
+  }
   const rows = await q<Record<string, unknown>>(
     `SELECT norm, original, hits FROM search_stats ORDER BY hits DESC, last_at DESC LIMIT $1`,
     [limit]
   );
   const items = rows.map((r) => ({ norm: String(r.norm), original: String(r.original), hits: Number(r.hits) }));
   sugSet(key, items);
+  void l2Set(key, items);
   return items;
 }
 

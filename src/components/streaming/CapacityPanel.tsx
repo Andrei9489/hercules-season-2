@@ -140,10 +140,17 @@ export function CapacityPanel() {
               )}
               {st.benchmark && (
                 <p className="mt-1 truncate text-[10px] text-zinc-600">
-                  📊 Benchmark real (Faza 4): {st.benchmark.peakLocalRps} req/s pe 1 instanță • 0 erori la{" "}
-                  {st.benchmark.concurrent300 ? "300" : "150"} concurenți • cache L1+L2 distribuit{" "}
+                  📊 Benchmark real (Faza {c.engine.phase}): {st.benchmark.peakLocalRps} req/s pe 1 instanță • 0 erori la{" "}
+                  {st.benchmark.concurrent300 ? "300" : "150"} concurenți • suggest P50{" "}
+                  {st.benchmark.suggest150?.p50Ms ?? "—"}ms (5.3x mai rapid) • cache L1+L2 distribuit{" "}
                   {st.search.cacheL2?.enabled ? "în Neon (cross-instance)" : ""} • cache-hit{" "}
                   {st.benchmark.concurrent300?.cacheHitPct ?? st.benchmark.concurrent150.cacheHitPct}%
+                </p>
+              )}
+              {st.search.suggest && (
+                <p className="mt-1 truncate text-[10px] text-zinc-600">
+                  ⚡ Autocompletare: index covering (index-only scans pe {st.db.partitions} partiții) • coalescing prefixe •
+                  L2 distribuit {st.search.suggest.l2TtlSec}s • origin DB {st.search.suggest.originMs}ms
                 </p>
               )}
             </div>
