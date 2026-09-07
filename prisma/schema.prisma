@@ -1,0 +1,141 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider        = "postgresql"
+  url             = env("DATABASE_URL")
+  directUrl       = env("DATABASE_URL")
+}
+
+model User {
+  id             String    @id @default(cuid())
+  name           String?
+  email          String?   @unique
+  emailVerified  DateTime?
+  image          String?
+  accounts       Account[]
+  sessions       Session[]
+  favorites      Favorite[]
+  watchlist      Watchlist[]
+  history        History[]
+  profiles       Profile[]
+  reviews        Review[]
+  createdAt      DateTime  @default(now())
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Profile {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  avatar    String   @default("🎬")
+  color     String   @default("#e50914")
+  isKid     Boolean  @default(false)
+  language  String   @default("ro")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  mediaId   String
+  mediaType String
+  title     String
+  poster    String?
+  backdrop  String?
+  year      String?
+  rating    Float?
+  source    String   @default("tmdb")
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, mediaId, mediaType])
+  @@index([userId])
+}
+
+model Watchlist {
+  id        String   @id @default(cuid())
+  userId    String
+  mediaId   String
+  mediaType String
+  title     String
+  poster    String?
+  backdrop  String?
+  year      String?
+  rating    Float?
+  source    String   @default("tmdb")
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, mediaId, mediaType])
+  @@index([userId])
+}
+
+model History {
+  id         String   @id @default(cuid())
+  userId     String
+  mediaId    String
+  mediaType  String
+  title      String
+  poster     String?
+  source     String   @default("tmdb")
+  progress   Float    @default(0)
+  duration   Float    @default(0)
+  trailerKey String?
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, mediaId, mediaType])
+  @@index([userId, updatedAt(sort: Desc)])
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  userId    String
+  mediaId   String
+  mediaType String
+  rating    Int
+  comment   String   @db.Text
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([mediaId])
+}
