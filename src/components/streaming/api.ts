@@ -39,4 +39,14 @@ export const api = {
   user: <T>(kind: string) => get<T>(`/api/user?kind=${kind}`),
   userPost: <T>(body: unknown) => post<T>("/api/user", body),
   subtitles: <T>(query: string) => get<T>(`/api/subtitles?${query}`),
+  // Faza 7 — AI Intelligence Suite
+  browse: <T>(query: string) => get<T>(`/api/browse?${query}`),
+  aiAnalyzer: <T>() => get<T>(`/api/ai/analyzer`),
+  aiAnalyzerRun: <T>() => post<T>("/api/ai/analyzer", {}),
+  aiGenres: <T>() => get<T>(`/api/ai/genres`),
+  aiGenresRun: <T>() => post<T>("/api/ai/genres", {}),
+  aiMetadata: <T>() => get<T>(`/api/ai/metadata`),
+  aiMetadataRun: <T>(maxTmdb = 300, llmBatches = 4) =>
+    post<T>(`/api/ai/metadata?maxTmdb=${maxTmdb}&llmBatches=${llmBatches}`, {}),
+  aiRecommend: <T>(query: string) => get<T>(`/api/ai/recommend?${query}`),
 };

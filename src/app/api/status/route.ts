@@ -42,11 +42,11 @@ const BENCH = {
 };
 
 export async function GET() {
-  const cached = cacheGet<{ ok: boolean }>("status:v6");
+  const cached = cacheGet<{ ok: boolean }>("status:v7");
   if (cached) return NextResponse.json(cached);
 
   try {
-    const [contentCount, typeCount, providerCount, logs, last24h, avgDur, topTrend, dbSize, partitionCount, idxCount, liveTvCount, radioCount, countryCount, streamFormats, rollupBuckets] =
+    const [contentCount, typeCount, providerCount, logs, last24h, avgDur, topTrend, dbSize, partitionCount, idxCount, liveTvCount, radioCount, countryCount, streamFormats, rollupBuckets, aiTax, aiTaxKind, aiMeta, aiInsights] =
       await Promise.all([
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content`),
         qOne<{ n: string }>(`SELECT count(DISTINCT content_type)::text AS n FROM content`),
@@ -63,6 +63,10 @@ export async function GET() {
         qOne<{ n: string }>(`SELECT count(DISTINCT country)::text AS n FROM content WHERE country IS NOT NULL`),
         q<{ source_type: string; n: number }>(`SELECT source_type, count(*)::int AS n FROM content WHERE content_type = 'live_tv' GROUP BY source_type ORDER BY n DESC`),
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM suggest_rollup`),
+        qOne<{ n: string }>(`SELECT count(*)::text AS n FROM genres`),
+        q<{ kind: string; n: number }>(`SELECT kind, count(*)::int AS n FROM genres GROUP BY kind ORDER BY n DESC`),
+        qOne<{ ai: string; wg: string }>(`SELECT (SELECT count(*)::text FROM content WHERE meta ? 'aiExtractedAt') AS ai, (SELECT count(DISTINCT content_id)::text FROM content_genres) AS wg`),
+        qOne<{ n: string }>(`SELECT count(*)::text AS n FROM ai_insights`),
       ]);
 
     const content = Number(contentCount?.n || 0);
@@ -121,13 +125,26 @@ export async function GET() {
         compatPct: 95,
         engines: ["iframe (20+ platforme)", "MP4/WebM direct", "HLS hls.js", "DASH dash.js", "embed HTML sandoboxat", "fallback generic + SRT extern"],
       },
+      ai: {
+        phase: 7,
+        taxonomy: {
+          total: Number(aiTax?.n || 0),
+          byKind: Object.fromEntries(aiTaxKind.map((r) => [r.kind, r.n])),
+        },
+        metadata: {
+          aiExtracted: Number(aiMeta?.ai || 0),
+          withGenres: Number(aiMeta?.wg || 0),
+        },
+        insights: Number(aiInsights?.n || 0),
+        features: ["analiză live (ai_insights, auto-refresh)", "recomandări (genuri comune + istoric)", "extragere metadate TMDB ro-RO + LLM", "taxonomie automată (gen/categorie/an/deceniu/studio/franciză/colecție/trilogie)", "paginare infinită 20/pagină", "cursor AI automat on/off"],
+      },
       benchmark: BENCH,
       capacity: {
         engine: {
           pct: Math.round(enginePct * 100) / 100,
           validatedRows: PHASE.engineRowCeiling,
           target: TARGETS.content,
-          phase: 6,
+          phase: 7,
           nextSteps: [
             "Faza 7: failover automat + sharding cross-node pe brand/tip + ingest continuu programat",
             "Faza 8: read-replica Neon dedicată + multi-region (EU/US/APAC) + CDN cache permanent",
@@ -157,7 +174,7 @@ export async function GET() {
       },
     };
 
-    cacheSet("status:v6", payload, 10);
+    cacheSet("status:v7", payload, 10);
     return NextResponse.json(payload);
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });

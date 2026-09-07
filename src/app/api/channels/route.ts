@@ -102,7 +102,7 @@ export async function GET(req: NextRequest) {
     const rows = await q<Record<string, unknown>>(
       `SELECT id, title, description, thumbnail, provider, source_type, source_url,
               country, continent, category, popularity, views,
-              COALESCE(meta_quality, CASE WHEN meta ? 'bitrate' THEN (meta->>'bitrate') || ' kbps' END) AS quality,
+              COALESCE(meta_quality, CASE WHEN meta ? 'bitrate' THEN concat_ws(' ', meta->>'bitrate', 'kbps') END) AS quality,
               COALESCE(meta_geo, false) AS "geoBlocked",
               COALESCE(meta_not247, false) AS "not247",
               meta->>'codec' AS codec,

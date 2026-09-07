@@ -31,6 +31,7 @@ import { ShowbizView } from "./ShowbizView";
 import { RadioView } from "./RadioView";
 import { DetailModal } from "./DetailModal";
 import { PlayerModal } from "./PlayerModal";
+import { AICursor } from "./AICursor";
 
 const NAV: { key: ViewKey; label: string; icon: typeof Home; group: string }[] = [
   { key: "acasa", label: "Acasă", icon: Home, group: "Principal" },
@@ -611,6 +612,9 @@ export function Shell() {
         onClose={() => setPlayerOpen(false)}
         authed={authedStable}
       />
+
+      {/* Faza 7: CURSOR AI AUTOMAT — comutator ON/OFF global */}
+      <AICursor />
 
       {/* DIALOG login demo */}
       <Dialog open={loginDialogOpen} onOpenChange={setLoginDialogOpen}>

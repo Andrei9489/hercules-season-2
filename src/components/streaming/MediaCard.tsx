@@ -29,6 +29,7 @@ export function MediaCard({ item, onOpen, onPlay, saved, fav, onToggleList, widt
     <motion.div
       whileHover={{ scale: 1.04, y: -4 }}
       transition={{ type: "spring", stiffness: 300, damping: 22 }}
+      data-ai-click
       className={`${width} shrink-0 group cursor-pointer`}
       onClick={() => onOpen(item)}
     >
