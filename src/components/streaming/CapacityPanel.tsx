@@ -180,6 +180,20 @@ export function CapacityPanel() {
                   ⬆️ Import tău: {st.userDriven.import.platforms.slice(0, 8).join(", ")}... + playlist M3U/IPTV {st.userDriven.import.m3u.enabled ? `ACTIV (max ${st.userDriven.import.m3u.maxPerImport.toLocaleString("ro-RO")} canale/import, idempotent)` : ""}
                 </p>
               )}
+              {st.faza11 && (
+                <>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🗂️ Colecții personale (Faza {c.engine.phase}): {st.faza11.collections.ui.join(" • ")} • limită{" "}
+                    {st.faza11.collections.limits.maxItems.toLocaleString("ro-RO")} itemi/colecție • {st.faza11.collections.storage}
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    ▶ Continuare vizionare: reluare automată de la poziție ({st.faza11.continueWatching.engines.join(", ")}) • progres real % pe carduri
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🔧 Mentenanță automată: {st.faza11.maintenance.operations.length} operațiuni ({st.faza11.maintenance.operations[0].split(" — ")[0]} etc.) • {st.faza11.maintenance.cronRecomandat}
+                  </p>
+                </>
+              )}
             </div>
           </div>
         )}

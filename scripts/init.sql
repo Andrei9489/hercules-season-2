@@ -107,7 +107,7 @@ CREATE TABLE "History" (
     "progress" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "duration" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "trailerKey" TEXT,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "History_pkey" PRIMARY KEY ("id")

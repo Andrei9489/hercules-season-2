@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X, Play, Plus, Check, Star, Subtitles, Loader2 } from "lucide-react";
+import { X, Play, Plus, Check, Star, Subtitles, Loader2, Layers } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
-import type { MediaItem, DetailData } from "./types";
+import type { MediaItem, DetailData, Collection } from "./types";
 import { api } from "./api";
 import { MEDIA_TYPE_LABEL } from "./MediaCard";
 
@@ -33,6 +33,12 @@ export function DetailModal({ item, open, onClose, onPlay, onOpenItem, isSaved, 
   const [rating, setRating] = useState<number>(0);
   const [comment, setComment] = useState("");
   const [sending, setSending] = useState(false);
+  // Faza 11 — adăugare la colecție (doar conținut din biblioteca Neon)
+  const [collPanel, setCollPanel] = useState(false);
+  const [colls, setColls] = useState<Collection[]>([]);
+  const [collsLoading, setCollsLoading] = useState(false);
+  const [newCollName, setNewCollName] = useState("");
+  const [addedTo, setAddedTo] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!open || !item) return;
@@ -41,6 +47,8 @@ export function DetailModal({ item, open, onClose, onPlay, onOpenItem, isSaved, 
     setRating(0);
     setComment("");
     setLoading(true);
+    setCollPanel(false);
+    setAddedTo(new Set());
     (async () => {
       try {
         if (item.source === "neon" || (item as { sourceUrl?: string | null }).sourceUrl) {
@@ -80,6 +88,41 @@ export function DetailModal({ item, open, onClose, onPlay, onOpenItem, isSaved, 
       toast({ title: "Subtitrări", description: "Nicio subtitrare disponibilă momentan." });
     } finally {
       setSubsLoading(false);
+    }
+  };
+
+  const loadColls = async () => {
+    if (!authed) return;
+    setCollsLoading(true);
+    try {
+      const r = await api.collections<{ collections: Collection[] }>();
+      setColls(r.collections || []);
+    } catch { setColls([]); }
+    finally { setCollsLoading(false); }
+  };
+
+  const addToColl = async (collId: string) => {
+    if (!item?.neonId) return;
+    try {
+      await api.collectionsPost({ action: "add", id: collId, contentId: item.neonId });
+      setAddedTo((prev) => new Set(prev).add(collId));
+      toast({ title: "Adăugat în colecție ✅" });
+    } catch {
+      toast({ title: "Eroare", description: "Nu am putut adăuga în colecție.", variant: "destructive" });
+    }
+  };
+
+  const createAndAdd = async () => {
+    if (!item?.neonId || newCollName.trim().length < 1) return;
+    try {
+      const r = await api.collectionsPost<{ collection: { id: string } }>({
+        action: "create", name: newCollName.trim(),
+      });
+      setNewCollName("");
+      await addToColl(r.collection.id);
+      loadColls();
+    } catch {
+      toast({ title: "Eroare", description: "Nu am putut crea colecția.", variant: "destructive" });
     }
   };
 
@@ -202,7 +245,85 @@ export function DetailModal({ item, open, onClose, onPlay, onOpenItem, isSaved, 
                     Subtitrări RO
                   </Button>
                 )}
+
+                {/* FAZA 11 — Adaugă la colecție (doar conținut Neon) */}
+                {item?.neonId != null && (
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      const next = !collPanel;
+                      setCollPanel(next);
+                      if (next) loadColls();
+                    }}
+                    className="border-zinc-700 bg-zinc-900 text-zinc-100 hover:bg-zinc-800"
+                  >
+                    <Layers className="h-4 w-4 mr-1" />
+                    Adaugă la colecție
+                  </Button>
+                )}
               </div>
+
+              {/* panou colecții (Faza 11) */}
+              {collPanel && item?.neonId != null && (
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-400">
+                    Colecțiile tale
+                  </p>
+                  {collsLoading ? (
+                    <div className="flex items-center gap-2 py-2 text-sm text-zinc-500">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Se încarcă...
+                    </div>
+                  ) : colls.length === 0 ? (
+                    <p className="text-sm text-zinc-500">
+                      Nu ai colecții — creează prima mai jos.
+                    </p>
+                  ) : (
+                    <ul className="max-h-40 space-y-1 overflow-y-auto">
+                      {colls.map((c) => (
+                        <li key={c.id} className="flex items-center justify-between rounded bg-zinc-900 px-2 py-1.5">
+                          <button
+                            onClick={() => onOpenItem(item)}
+                            className="truncate text-sm text-zinc-300 hover:text-red-400"
+                            title="Deschide colecția"
+                          >
+                            {c.name} <span className="text-xs text-zinc-600">({c.itemsCount})</span>
+                          </button>
+                          <button
+                            onClick={() => addToColl(c.id)}
+                            disabled={addedTo.has(c.id)}
+                            aria-label={`Adaugă în ${c.name}`}
+                            className={`ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
+                              addedTo.has(c.id)
+                                ? "bg-emerald-950 text-emerald-400"
+                                : "bg-zinc-800 text-zinc-300 hover:bg-red-600 hover:text-white"
+                            }`}
+                          >
+                            {addedTo.has(c.id) ? <Check className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={newCollName}
+                      onChange={(e) => setNewCollName(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && createAndAdd()}
+                      placeholder="Colecție nouă..."
+                      maxLength={120}
+                      aria-label="Nume colecție nouă"
+                      className="h-9 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-red-600"
+                    />
+                    <button
+                      onClick={createAndAdd}
+                      disabled={newCollName.trim().length < 1}
+                      className="h-9 rounded-md bg-red-600 px-3 text-xs font-bold text-white hover:bg-red-500 disabled:opacity-50"
+                    >
+                      Creează & adaugă
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {subs && (
                 <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">

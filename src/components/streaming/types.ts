@@ -84,6 +84,11 @@ export type CapacityStatus = {
     degradedMode: string;
     healthEndpoint: string;
   };
+  faza11?: {
+    collections: { enabled: boolean; endpoint: string; tables: string[]; storage: string; limits: { maxCollections: number; maxItems: number }; ui: string[] };
+    continueWatching: { enabled: boolean; resumeFrom: string; engines: string[]; progressSave: string };
+    maintenance: { endpoint: string; operations: string[]; cronRecomandat: string };
+  };
   userDriven?: {
     import: {
       sources: string;
@@ -108,6 +113,22 @@ export type CapacityStatus = {
     concurrentSearches: { pct: number; now: number; target: number; mechanisms: string[] };
     concurrentUsers: { pct: number; now: number; target: number; mechanisms: string[]; anchorFormula?: string };
   };
+};
+
+// FAZA 11 — istoric cu progres real (pentru „Continuă vizionarea”)
+export type HistoryItem = {
+  id: string;
+  mediaId: string;
+  mediaType: string;
+  title: string;
+  poster: string | null;
+  backdrop: string | null;
+  year: string | null;
+  rating: number | null;
+  source: string;
+  progress: number;   // secunde vizionate
+  duration: number;   // durată totală cunoscută (0 = necunoscută)
+  updatedAt: string;
 };
 
 export type UserItem = {
@@ -232,4 +253,34 @@ export type DetailData = MediaItem & {
 export type ViewKey =
   | "acasa" | "filme" | "seriale" | "anime" | "muzica" | "copii"
   | "sport" | "gaming" | "documentare" | "telenovele" | "stiri"
-  | "fun" | "lista" | "search" | "universuri" | "showbiz" | "radio";
+  | "fun" | "lista" | "search" | "universuri" | "showbiz" | "radio"
+  | "colectii";
+
+// FAZA 11 — colecții personale (playlists utilizator, 100% Neon)
+export type Collection = {
+  id: string;
+  name: string;
+  description: string;
+  isPublic?: boolean;
+  itemsCount: number;
+  posterUrl: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type CollectionItem = {
+  id: number;
+  title: string;
+  contentType: string;
+  provider: string;
+  sourceType: string;
+  sourceUrl: string | null;
+  embedCode: string | null;
+  thumbnail: string | null;
+  backdrop: string | null;
+  year: number | null;
+  rating: number;
+  views: number;
+  signed?: boolean;
+  addedAt?: string;
+};

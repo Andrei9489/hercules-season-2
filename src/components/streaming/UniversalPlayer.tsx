@@ -13,6 +13,13 @@ type Props = {
   signedSrc?: string | null;
   /** Semnarea în curs (se cere /api/stream/sign). */
   signing?: boolean;
+  /** FAZA 11 — reluare de la poziție (secunde). Aplicată pe video/HLS/DASH VOD
+   *  + parametru „start” pe embed-urile YouTube; ignorată pe streamuri live. */
+  startAt?: number;
+  /** poziția curentă în timp real (pt. salvare precisă a progresului) */
+  onTimeUpdate?: (seconds: number) => void;
+  /** durata reală a mediaului (0/necunoscut pentru embed-uri) */
+  onDuration?: (seconds: number) => void;
 };
 
 /**
@@ -23,12 +30,33 @@ type Props = {
  *  iframe generic + fallback extern; protocoale non-HTTP (SRT/RTMP/
  *  UDP/RTSP) → mesaj clar + copiere URL (browserele nu le pot reda).
  */
-export function UniversalPlayer({ source, title, contentId, compact, signedSrc, signing }: Props) {
+export function UniversalPlayer({ source, title, contentId, compact, signedSrc, signing, startAt = 0, onTimeUpdate, onDuration }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [fallback, setFallback] = useState(false);
   const eventTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const seconds = useRef(0);
+  const seeked = useRef(false);
+
+  // FAZA 11 — reluare de la poziție: la încărcarea metadatelor, sărim la startAt
+  // (doar pentru conținut VOD — durată finită; streamurile live nu se pot „relua”)
+  const handleLoadedMetadata = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (onDuration) onDuration(Number.isFinite(v.duration) ? v.duration : 0);
+    if (!seeked.current && startAt > 10 && Number.isFinite(v.duration) && v.duration > 0 && startAt < v.duration - 5) {
+      seeked.current = true;
+      try { v.currentTime = startAt; } catch { /* some streams reject seeking */ }
+    }
+  };
+
+  const handleTimeUpdate = () => {
+    const v = videoRef.current;
+    if (onTimeUpdate && v) onTimeUpdate(v.currentTime);
+  };
+
+  // resetăm „reluat” la schimbarea sursei — fiecare item începe un nou ciclu de reluare
+  useEffect(() => { seeked.current = false; }, [source, signedSrc]);
 
   // evenimente de redare → Neon (asincron)
   useEffect(() => {
@@ -223,6 +251,8 @@ export function UniversalPlayer({ source, title, contentId, compact, signedSrc, 
             autoPlay
             playsInline
             className="h-full w-full bg-black"
+            onLoadedMetadata={handleLoadedMetadata}
+            onTimeUpdate={handleTimeUpdate}
             onError={() => setMediaError("Fișierul media nu poate fi redat (format sau CORS nesuportat).")}
           />
         )}
@@ -245,7 +275,11 @@ export function UniversalPlayer({ source, title, contentId, compact, signedSrc, 
   }
 
   // iframe (provider recunoscut sau necunoscut) + fallback
-  const src = source.kind === "iframe" ? source.src : source.kind === "unknown" ? source.url : "";
+  // FAZA 11 — YouTube acceptă reluarea prin parametrul „start”
+  let src = source.kind === "iframe" ? source.src : source.kind === "unknown" ? source.url : "";
+  if (src && startAt > 10 && /youtube[^/]*\.com\/embed\//i.test(src) && !/[?&]start=/i.test(src)) {
+    src += `${src.includes("?") ? "&" : "?"}start=${Math.floor(startAt)}`;
+  }
   if (!src) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center text-sm text-zinc-500">

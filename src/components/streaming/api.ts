@@ -49,4 +49,7 @@ export const api = {
   aiMetadataRun: <T>(maxTmdb = 300, llmBatches = 4) =>
     post<T>(`/api/ai/metadata?maxTmdb=${maxTmdb}&llmBatches=${llmBatches}`, {}),
   aiRecommend: <T>(query: string) => get<T>(`/api/ai/recommend?${query}`),
+  // Faza 11 — colecții personale + mentenanță
+  collections: <T>(query = "") => get<T>(`/api/collections${query ? `?${query}` : ""}`),
+  collectionsPost: <T>(body: unknown) => post<T>("/api/collections", body),
 };

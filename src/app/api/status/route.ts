@@ -43,21 +43,21 @@ const PHASE = {
 // (model user-driven) → pentru cifre comparabile cu Faza 6 rămâne
 // ancora 191 req/s pe bibliotecă de 17.858 itemi.
 const BENCH = {
-  at: "2026-09-08",
-  peakLocalRps: 208,                    // 1 instanță dev, sandbox partajat (Faza 9, bibliotecă goală)
+  at: "2026-09-09",
+  peakLocalRps: 169,                    // 1 instanță dev, sandbox partajat (Faza 11, bibliotecă goală)
   comparableAnchorRps: 191,             // Faza 6, bibliotecă 17.858 itemi — baza pentru concurrentSearchNow
-  concurrent50: { rps: 116, p95Ms: 2285, cacheHitPct: 87 },
-  concurrent150: { rps: 193, p95Ms: 4417, cacheHitPct: 100 },
-  concurrent300: { rps: 186, errors: 0, cacheHitPct: 100 },
-  suggest150: { rps: 56, p50Ms: 2093 },
-  suggest300: { rps: 196, p50Ms: 528, errors: 0 },
-  channels: { rps: 84, p50Ms: 180 },
-  radio: { rps: 51, p50Ms: 112 },
-  note: "Faza 9: 208 req/s peak • 0,0% erori în TOATE fazele cu circuit breaker + admission control ACTIVE (origin protejat de avalanșe) • sugestii rollup 208 req/s la 300 concurenți • producție = N instanțe + L2 shared în Neon + edge cache",
+  concurrent50: { rps: 100, p95Ms: 2104, cacheHitPct: 89 },
+  concurrent150: { rps: 168, p95Ms: 4804, cacheHitPct: 100 },
+  concurrent300: { rps: 169, errors: 0, cacheHitPct: 100 },
+  suggest150: { rps: 56, p50Ms: 2059 },
+  suggest300: { rps: 164, p50Ms: 872, errors: 0 },
+  channels: { rps: 52, p50Ms: 122 },
+  radio: { rps: 51, p50Ms: 117 },
+  note: "Faza 11: 169 req/s peak • 0,0% erori în TOATE fazele A-H (până la 300 concurenți) cu reziliența activă • ancora comparabilă 191 req/s (Faza 6, bibliotecă plină) • noi în Faza 11: colecții personale + continuare vizionare cu reluare + /api/maintain (partiții automate, curățare cache L2, rollup)",
 };
 
 export async function GET(req: NextRequest) {
-  const cached = cacheGet<{ ok: boolean }>("status:v10");
+  const cached = cacheGet<{ ok: boolean }>("status:v11");
   if (cached) return withCache(req, cached, { sMaxage: 10, swr: 60 });
 
   try {
@@ -158,12 +158,33 @@ export async function GET(req: NextRequest) {
         },
       },
       resilience: {
-        phase: 10,
+        phase: 11,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
         degradedMode: "stale-while-error — căutarea/sugestiile servesc cache-ul vechi când origin-ul e indisponibil; zero erori pentru utilizator",
         healthEndpoint: "/api/health — ping DB + stare breaker/gate pentru monitorizare și failover",
+      },
+      faza11: {
+        collections: {
+          enabled: true,
+          endpoint: "/api/collections",
+          tables: ["collections", "collection_items"],
+          storage: "100% Neon — playlist-uri personale cu itemi legați logic la content (partiționat HASH)",
+          limits: { maxCollections: 100, maxItems: 2000 },
+          ui: ["Colecțiile Mele (sidebar → Cont)", "Adaugă la colecție din modalul de detalii", "creare inline + eliminare itemi"],
+        },
+        continueWatching: {
+          enabled: true,
+          resumeFrom: "History.progress (secunde) — PlayerModal încarcă poziția și caută automat la startAt",
+          engines: ["video direct (currentTime)", "HLS VOD (seek la loadedmetadata)", "DASH VOD", "YouTube embed (parametru start)", "live ignorat corect"],
+          progressSave: "poziție reală (timeupdate) + durată reală (loadedmetadata) → bară % pe carduri",
+        },
+        maintenance: {
+          endpoint: "/api/maintain (POST, x-maintain-token)",
+          operations: ["ensure_partitions — partiții search_logs automate până în anul curent +3", "cleanup_cache — șterge rândurile expirate din search_cache (L2)", "refresh_rollup — re-materializează bucket-ele sugestii 1-3", "stats — raport sănătate"],
+          cronRecomandat: "producție: la fiecare 6-12 ore",
+        },
       },
       userDriven: {
         import: {
@@ -192,10 +213,11 @@ export async function GET(req: NextRequest) {
           pct: Math.round(enginePct * 100) / 100,
           validatedRows: PHASE.engineRowCeiling,
           target: TARGETS.content,
-          phase: 10,
+          phase: 11,
           nextSteps: [
             "Faza 9: reziliență LIVE — circuit breaker, admission control, statement timeout, degradare grațioasă, /api/health; platforma rămâne în picioare chiar și când DB e lent/picat",
             "Faza 10: player 100% (MPEG-TS + semnare token/HMAC/JWT server-side) + scalare utilizatori (edge cache + ETag + rate limiting pe niveluri)",
+            "Faza 11: colecții personale (playlists) + continuare vizionare cu reluare + mentenanță automată (/api/maintain: partiții viitoare, curățare cache L2, rollup)",
             "Producție: read-replica Neon dedicată + multi-region (EU/US/APAC) + partiții extinse x64/256 la depășirea a 100M rânduri/partiție",
           ],
         },
@@ -207,6 +229,7 @@ export async function GET(req: NextRequest) {
             "Faza 9: admission control — plafon interogări origin + coadă cu timeout (origin nu mai poate colapsa sub avalanșă)",
             "Faza 9: circuit breaker fail-fast + stale-while-error — zero erori vizibile pentru utilizator",
             "Faza 6: rollup pre-agregat sugestii (PK hits pe bucket, ranking popularitate)",
+            "Faza 11: partiții search_logs automate (până în anul curent +3) — logging nu se blochează niciodată la schimbarea de an",
             "pool READ/WRITE separat (RO 10 + RW 12) + statement_timeout 8s/20s",
             "cache L2 DISTRIBUIT în Neon (search_cache) — partajat cross-instance",
             "cache L1 LRU 120s/5.000 + coalescing cereri identice",
@@ -232,7 +255,7 @@ export async function GET(req: NextRequest) {
       },
     };
 
-    cacheSet("status:v10", payload, 10);
+    cacheSet("status:v11", payload, 10);
     return withCache(req, payload, { sMaxage: 10, swr: 60 });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });

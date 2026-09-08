@@ -8,6 +8,8 @@ import { api } from "./api";
 import { UniversalPlayer } from "./UniversalPlayer";
 import { resolveSource } from "@/lib/source-resolver";
 
+type HistoryEntry = { mediaId: string; mediaType: string; progress: number; duration: number };
+
 type Props = {
   item: MediaItem | null;
   open: boolean;
@@ -31,14 +33,47 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
   const [signing, setSigning] = useState(false);
   const startedAt = useRef<number>(0);
   const saveTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // FAZA 11 — reluare de la poziție + progres precis
+  const [startAt, setStartAt] = useState(0);
+  const livePos = useRef(0);       // poziția reală (timeupdate) pentru surse directe
+  const liveDur = useRef(0);       // durata reală a mediaului (0 = necunoscută)
+  // FAZA 11 — itemi veniți din istoric/colecții fără sursă directă:
+  // completăm sourceUrl/embedCode/signed din Neon după id
+  const [neonSrc, setNeonSrc] = useState<{ sourceUrl: string | null; embedCode: string | null; signed: boolean } | null>(null);
 
-  // sursă directă (bibliotecă Neon: URL sau embed)
+  // sursă directă (bibliotecă Neon: URL sau embed) — cu completare din Neon (Faza 11)
   const universalSource = useMemo(() => {
     if (!item) return null;
-    const raw = (item as { sourceUrl?: string | null }).sourceUrl || (item as { embedCode?: string | null }).embedCode;
+    const raw =
+      (item as { sourceUrl?: string | null }).sourceUrl ||
+      (item as { embedCode?: string | null }).embedCode ||
+      neonSrc?.sourceUrl || neonSrc?.embedCode;
     if (!raw) return null;
     return resolveSource(raw, { parent: typeof window !== "undefined" ? window.location.hostname : "" });
-  }, [item]);
+  }, [item, neonSrc]);
+
+  // FAZA 11 — flag semnat efectiv (item.signed sau completat din Neon)
+  const effSigned = Boolean((item as { signed?: boolean })?.signed) || Boolean(neonSrc?.signed);
+
+  useEffect(() => {
+    setNeonSrc(null);
+    if (!open || !item) return;
+    const hasDirect = Boolean(
+      (item as { sourceUrl?: string | null }).sourceUrl || (item as { embedCode?: string | null }).embedCode
+    );
+    if (hasDirect || !/^\d+$/.test(item.id)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.library<{ items: { id: number; sourceUrl: string | null; embedCode: string | null; thumbnail: string | null; signed?: boolean }[] }>(`id=${item.id}`);
+        const l = r.items?.[0];
+        if (!cancelled && l) {
+          setNeonSrc({ sourceUrl: l.sourceUrl, embedCode: l.embedCode, signed: Boolean(l.signed) });
+        }
+      } catch { /* la eșec — comportament normal (trailer fallback) */ }
+    })();
+    return () => { cancelled = true; };
+  }, [open, item]);
 
   // Faza 10 — dacă streamul are configurație de semnare (token/HMAC/JWT),
   // cerem URL-ul semnat server-side (secretul NU ajunge în browser).
@@ -46,7 +81,7 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
     setSignedSrc(null);
     setSigning(false);
     const cid = item?.neonId ?? (typeof item?.id === "number" ? item.id : null);
-    if (!open || !item || !cid || !(item as { signed?: boolean }).signed) return;
+    if (!open || !item || !cid || !effSigned) return;
     if (!universalSource || !["video", "hls", "dash", "ts"].includes(universalSource.kind)) return;
     let cancelled = false;
     setSigning(true);
@@ -71,7 +106,26 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
     setError(null);
     setElapsed(0);
     setPlaying(true);
+    setStartAt(0);
+    livePos.current = 0;
+    liveDur.current = 0;
     startedAt.current = Date.now();
+
+    // FAZA 11 — reluare: căutăm progresul anterior pentru ACEST conținut
+    if (authed) {
+      api.user<{ items: HistoryEntry[] }>("history")
+        .then((r) => {
+          const h = r.items?.find(
+            (x) => x.mediaId === item.id && (x.mediaType === item.mediaType || item.mediaType === "neon")
+          );
+          // reluăm doar dacă e suficient progres și nu e aproape final
+          if (h && h.progress > 30 && (h.duration === 0 || h.progress < h.duration * 0.95)) {
+            setStartAt(h.progress);
+            livePos.current = h.progress;
+          }
+        })
+        .catch(() => {});
+    }
 
     (async () => {
       // redare directă din sursă externă — nu mai căutăm trailer
@@ -108,14 +162,16 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
     return () => {
       if (saveTimer.current) clearInterval(saveTimer.current);
     };
-  }, [open, item]);
+  }, [open, item, authed]);
 
-  // salvare progres la închidere
+  // salvare progres la închidere (FAZA 11 — poziție reală + durată reală)
   useEffect(() => {
     return () => {
       if (!item) return;
-      const secs = Math.round((Date.now() - startedAt.current) / 1000);
-      if (secs < 5) return;
+      const wallSecs = Math.round((Date.now() - startedAt.current) / 1000);
+      const pos = livePos.current > 0 ? Math.round(livePos.current) : startAt + wallSecs;
+      const secs = Math.max(wallSecs, startAt > 0 ? 1 : 0);
+      if (secs < 5 || pos < 5) return;
       const payload = {
         action: "progress",
         kind: "history",
@@ -124,13 +180,37 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
           poster: item.poster, backdrop: item.backdrop, year: item.year,
           rating: item.rating, source: item.source || "tmdb",
         },
-        progress: secs,
-        duration: 0,
+        progress: pos,
+        duration: liveDur.current,
         trailerKey: item.trailerKey || null,
       };
       api.userPost(payload).catch(() => {});
     };
-  }, [item]);
+  }, [item, startAt]);
+
+  // FAZA 11 — salvare periodică (60s): progresul nu se pierde la închiderea
+  // forțată a tabului sau la crash — pattern-ul platformelor de streaming
+  useEffect(() => {
+    if (!open || !item || !authed) return;
+    const t = setInterval(() => {
+      const wallSecs = Math.round((Date.now() - startedAt.current) / 1000);
+      const pos = livePos.current > 0 ? Math.round(livePos.current) : startAt + wallSecs;
+      if (pos < 30) return;
+      api.userPost({
+        action: "progress",
+        kind: "history",
+        media: {
+          mediaId: item.id, mediaType: item.mediaType, title: item.title,
+          poster: item.poster, backdrop: item.backdrop, year: item.year,
+          rating: item.rating, source: item.source || "tmdb",
+        },
+        progress: pos,
+        duration: liveDur.current,
+        trailerKey: item.trailerKey || null,
+      }).catch(() => {});
+    }, 60_000);
+    return () => clearInterval(t);
+  }, [open, item, authed, startAt]);
 
   if (!item) return null;
 
@@ -163,6 +243,9 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
                 contentId={item.neonId ?? (typeof item.id === "number" ? item.id : null)}
                 signedSrc={signedSrc}
                 signing={signing}
+                startAt={startAt}
+                onTimeUpdate={(t) => { livePos.current = t; }}
+                onDuration={(d) => { liveDur.current = d; }}
               />
             </div>
           )}
@@ -197,7 +280,8 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
           <div className="min-w-0">
             <p className="truncate text-sm font-bold text-zinc-100">{item.title}</p>
             <p className="text-xs text-zinc-500">
-              {playKind ? `Redare din ${playKind} • ${universalSource?.providerLabel}${(item as { signed?: boolean }).signed && universalSource?.kind !== "unplayable" ? " • URL semnat" : ""}` : isMusic ? "Videoclip muzical" : "Trailer oficial"} • Timp vizionat: {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+              {playKind ? `Redare din ${playKind} • ${universalSource?.providerLabel}${effSigned && universalSource?.kind !== "unplayable" ? " • URL semnat" : ""}` : isMusic ? "Videoclip muzical" : "Trailer oficial"} • Timp vizionat: {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+              {startAt > 0 && " • reluare de la " + Math.floor(startAt / 60) + ":" + String(Math.round(startAt % 60)).padStart(2, "0")}
               {!authed && " • Conectează-te pentru a salva progresul"}
             </p>
           </div>

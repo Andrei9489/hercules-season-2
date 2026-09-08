@@ -101,7 +101,9 @@ export async function GET(req: NextRequest) {
       },
       {
         headers: {
-          "Cache-Control": "public, s-maxage=15, stale-while-revalidate=45",
+          // Faza 11: s-maxage 30s (de la 15s) + SWR 120s — mai mult offload
+          // la CDN pentru căutările în bibliotecă (invalidare rămâne la ingest)
+          "Cache-Control": "public, s-maxage=30, stale-while-revalidate=120",
           "X-RateLimit-Remaining": String(rl.remaining),
         },
       }

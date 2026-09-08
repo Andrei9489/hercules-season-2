@@ -209,32 +209,43 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
           </Row>
         )}
 
-        {/* CONTINUĂ VIZIONAREA — istoric propriu */}
+        {/* CONTINUĂ VIZIONAREA — istoric propriu, FAZA 11: progres real + reluare */}
         {authed && history.length > 0 && (
           <Row title="▶ Continuă vizionarea" onMore={() => onNavigate("lista")}>
-            {history.map((h) => (
-              <div key={h.id} className="relative w-36 shrink-0 cursor-pointer group sm:w-40 lg:w-44" onClick={() => onOpen({
-                id: h.mediaId, mediaType: h.mediaType, title: h.title, poster: h.poster,
-                backdrop: h.backdrop, overview: "", year: h.year || "", rating: h.rating || 0, source: h.source || "neon",
-              })}>
-                <div className="relative aspect-video rounded-xl overflow-hidden bg-zinc-800 ring-1 ring-white/10">
-                  {h.backdrop || h.poster ? (
-                    <img src={h.backdrop || h.poster || ""} alt={h.title} className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-3xl">🎬</div>
-                  )}
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <PlayCircle className="h-10 w-10 text-white drop-shadow" />
-                  </div>
-                  {h.progress != null && h.progress > 0 && (
-                    <div className="absolute bottom-0 left-0 right-0 h-1 bg-zinc-700">
-                      <div className="h-full bg-red-600" style={{ width: `${Math.min(95, (h.progress / 600) * 100)}%` }} />
+            {history.map((h) => {
+              const pct = h.progress > 0
+                ? Math.min(95, h.duration && h.duration > 0 ? (h.progress / h.duration) * 100 : (h.progress / 600) * 100)
+                : 0;
+              return (
+                <div key={h.id} className="relative w-36 shrink-0 cursor-pointer group sm:w-40 lg:w-44" data-ai-click
+                  onClick={() => onPlay({
+                    id: h.mediaId, mediaType: h.mediaType, title: h.title, poster: h.poster,
+                    backdrop: h.backdrop, overview: "", year: h.year || "", rating: h.rating || 0, source: h.source || "neon",
+                  })}>
+                  <div className="relative aspect-video rounded-xl overflow-hidden bg-zinc-800 ring-1 ring-white/10">
+                    {h.backdrop || h.poster ? (
+                      <img src={h.backdrop || h.poster || ""} alt={h.title} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-3xl">🎬</div>
+                    )}
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <PlayCircle className="h-10 w-10 text-white drop-shadow" />
                     </div>
+                    {pct > 0 && (
+                      <div className="absolute bottom-0 left-0 right-0 h-1 bg-zinc-700">
+                        <div className="h-full bg-red-600" style={{ width: `${pct}%` }} />
+                      </div>
+                    )}
+                  </div>
+                  <p className="mt-1.5 truncate text-[13px] font-medium">{h.title}</p>
+                  {h.progress > 0 && (
+                    <p className="truncate text-[10px] text-zinc-600">
+                      {pct > 0 ? `${Math.round(pct)}% vizionat` : ""}{h.duration > 0 && h.progress > 0 ? ` • ${Math.floor(h.progress / 60)}:${String(Math.round(h.progress % 60)).padStart(2, "0")}` : ""}
+                    </p>
                   )}
                 </div>
-                <p className="mt-1.5 truncate text-[13px] font-medium">{h.title}</p>
-              </div>
-            ))}
+              );
+            })}
           </Row>
         )}
 

@@ -71,7 +71,18 @@ export async function GET(req: NextRequest) {
   let hits: Awaited<ReturnType<typeof searchLibrary>>["hits"] = [];
   let tookMs = 0;
   try {
-    if (query.trim()) {
+    // FAZA 11: ?id=<numeric> — item unic (pentru reluare din istoric/colecții)
+    const idParam = sp.get("id");
+    if (idParam && /^\d+$/.test(idParam)) {
+      const rows = await q<Item>(
+        `SELECT id, external_id, title, original_title, description, content_type, brand, category,
+                continent, country, provider, source_type, source_url, embed_code, thumbnail, backdrop,
+                year, rating, popularity, views, (meta ? 'signing') AS signed, 0 AS score
+         FROM content WHERE id = $1 LIMIT 1`,
+        [Number(idParam)]
+      );
+      hits = rows.map(rowToHit);
+    } else if (query.trim()) {
       const r = await searchLibrary(query, { limit, offset, type, brand });
       hits = r.hits;
       tookMs = r.tookMs;
