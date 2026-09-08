@@ -1,0 +1,742 @@
+     1→"use client";
+     2→
+     3→import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+     4→import { useSession, signOut, signIn } from "next-auth/react";
+     5→import {
+     6→  Home, Film, Tv, Sparkles, Music2, Baby, Trophy, Gamepad2,
+     7→  Globe2, Heart, Newspaper, Laugh, Bookmark, Search, Menu, X, LogIn, LogOut, User, Radio, PlusCircle, Layers,
+     8→} from "lucide-react";
+     9→import {
+    10→  DropdownMenu, DropdownMenuContent, DropdownMenuItem,
+    11→  DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+    12→} from "@/components/ui/dropdown-menu";
+    13→import { Input } from "@/components/ui/input";
+    14→import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+    15→import { toast } from "@/hooks/use-toast";
+    16→import type { MediaItem, ViewKey, UserItem } from "./types";
+    17→import { api } from "./api";
+    18→import { HomeView } from "./HomeView";
+    19→import { LibraryView } from "./LibraryView";
+    20→import { MyListView } from "./MyListView";
+    21→import { CollectionsView } from "./CollectionsView";
+    22→import { SearchView } from "./SearchView";
+    23→import { LibraryAddDialog } from "./LibraryAddDialog";
+    24→import { DetailModal } from "./DetailModal";
+    25→import { PlayerModal } from "./PlayerModal";
+    26→import { AICursor } from "./AICursor";
+    27→
+    28→const NAV: { key: ViewKey; label: string; icon: typeof Home; group: string }[] = [
+    29→  { key: "acasa", label: "Acasă", icon: Home, group: "Principal" },
+    30→  { key: "filme", label: "Filme", icon: Film, group: "Principal" },
+    31→  { key: "seriale", label: "Seriale", icon: Tv, group: "Principal" },
+    32→  { key: "anime", label: "Anime", icon: Sparkles, group: "Principal" },
+    33→  { key: "copii", label: "Copii & Desene", icon: Baby, group: "Principal" },
+    34→  { key: "muzica", label: "Muzică", icon: Music2, group: "Media" },
+    35→  { key: "documentare", label: "Documentare", icon: Globe2, group: "Media" },
+    36→  { key: "telenovele", label: "Telenovele", icon: Heart, group: "Media" },
+    37→  { key: "sport", label: "Sport", icon: Trophy, group: "Live" },
+    38→  { key: "gaming", label: "Gaming", icon: Gamepad2, group: "Live" },
+    39→  { key: "stiri", label: "Știri", icon: Newspaper, group: "Live" },
+    40→  { key: "radio", label: "Radio Live", icon: Radio, group: "Live" },
+    41→  { key: "fun", label: "Distracție", icon: Laugh, group: "Live" },
+    42→  { key: "lista", label: "Lista Mea", icon: Bookmark, group: "Cont" },
+    43→  { key: "colectii", label: "Colecțiile Mele", icon: Layers, group: "Cont" },
+    44→];
+    45→
+    46→// Faza 4: meniuri COMPLET FUNCȚIONALE — fiecare item navighează la view + parametru
+    47→// (înainte erau „CURÂND” — acum activ: Universuri, Canale Kids, TV & Show-biz, Lumea)
+    48→type ExtraItem = { label: string; icon: string; group: string; view: ViewKey; param: string };
+    49→const NAV_EXTRA: ExtraItem[] = [
+    50→  { label: "Marvel", icon: "🦸", group: "Universuri", view: "universuri", param: "marvel" },
+    51→  { label: "DC", icon: "🦇", group: "Universuri", view: "universuri", param: "dc" },
+    52→  { label: "Blockbustere", icon: "💥", group: "Universuri", view: "universuri", param: "blockbuster" },
+    53→  { label: "Disney", icon: "🏰", group: "Canale Kids", view: "copii", param: "disney" },
+    54→  { label: "Jetix", icon: "⚡", group: "Canale Kids", view: "copii", param: "jetix" },
+    55→  { label: "Fox Kids", icon: "🦊", group: "Canale Kids", view: "copii", param: "fox-kids" },
+    56→  { label: "Cartoon Network", icon: "📺", group: "Canale Kids", view: "copii", param: "cartoon-network" },
+    57→  { label: "Boomerang", icon: "🪃", group: "Canale Kids", view: "copii", param: "boomerang" },
+    58→  { label: "Minimax", icon: "🎈", group: "Canale Kids", view: "copii", param: "minimax" },
+    59→  { label: "Divertisment", icon: "🎭", group: "TV & Show-biz", view: "showbiz", param: "divertisment" },
+    60→  { label: "Show-biz", icon: "⭐", group: "TV & Show-biz", view: "showbiz", param: "showbiz" },
+    61→  { label: "Reality TV", icon: "🎤", group: "TV & Show-biz", view: "showbiz", param: "reality" },
+    62→  { label: "Emisiuni TV", icon: "🎙️", group: "TV & Show-biz", view: "showbiz", param: "emisiuni" },
+    63→  { label: "Europa", icon: "🇪🇺", group: "Lumea — 196 țări", view: "stiri", param: "Europa" },
+    64→  { label: "America de Nord", icon: "🌎", group: "Lumea — 196 țări", view: "stiri", param: "America de Nord" },
+    65→  { label: "America de Sud", icon: "🌏", group: "Lumea — 196 țări", view: "stiri", param: "America de Sud" },
+    66→  { label: "Asia", icon: "🏯", group: "Lumea — 196 țări", view: "stiri", param: "Asia" },
+    67→  { label: "Africa", icon: "🌍", group: "Lumea — 196 țări", view: "stiri", param: "Africa" },
+    68→  { label: "Oceania", icon: "🏝️", group: "Lumea — 196 țări", view: "stiri", param: "Oceania" },
+    69→];
+    70→const EXTRA_GROUPS = Array.from(new Set(NAV_EXTRA.map((n) => n.group)));
+    71→
+    72→type Profile = { id: string; name: string; avatar: string; color: string; isKid: boolean };
+    73→
+    74→export function Shell() {
+    75→  const { data: session, status } = useSession();
+    76→  const authed = status === "authenticated";
+    77→  const authedStable = useMemo(() => authed, [authed]);
+    78→
+    79→  const [view, setView] = useState<ViewKey>("acasa");
+    80→  const [sidebarOpen, setSidebarOpen] = useState(false);
+    81→  // Faza 4: parametri pentru meniurile avansate (tab/brand/continent)
+    82→  const [universuriTab, setUniversuriTab] = useState("marvel");
+    83→  const [showbizTab, setShowbizTab] = useState("divertisment");
+    84→  const [kidsBrand, setKidsBrand] = useState("disney");
+    85→  const [newsContinent, setNewsContinent] = useState("");
+    86→  const [searchQuery, setSearchQuery] = useState("");
+    87→  const [searchInput, setSearchInput] = useState("");
+    88→  // Faza 3: autocompletare live din Neon (suggest API)
+    89→  const [suggestions, setSuggestions] = useState<string[]>([]);
+    90→  const [showSug, setShowSug] = useState(false);
+    91→  const [sugIdx, setSugIdx] = useState(-1);
+    92→  const sugAbort = useRef<AbortController | null>(null);
+    93→  const [detailItem, setDetailItem] = useState<MediaItem | null>(null);
+    94→  const [detailOpen, setDetailOpen] = useState(false);
+    95→  const [playerItem, setPlayerItem] = useState<MediaItem | null>(null);
+    96→  const [playerOpen, setPlayerOpen] = useState(false);
+    97→  const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+    98→  const [favIds, setFavIds] = useState<Set<string>>(new Set());
+    99→  const [refreshKey, setRefreshKey] = useState(0);
+   100→  const [profiles, setProfiles] = useState<Profile[]>([]);
+   101→  const [activeProfile, setActiveProfile] = useState<Profile | null>(null);
+   102→  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
+   103→  const [newProfile, setNewProfile] = useState({ name: "", avatar: "🎬" });
+   104→  const [loginDialogOpen, setLoginDialogOpen] = useState(false);
+   105→  const [loginEmail, setLoginEmail] = useState("");
+   106→  // Faza 8: dialog global de încărcare conținut (accesibil din toate meniurile)
+   107→  const [addOpen, setAddOpen] = useState(false);
+   108→
+   109→  // încarcă watchlist + favorite
+   110→  useEffect(() => {
+   111→    if (!authedStable) return;
+   112→    let cancelled = false;
+   113→    (async () => {
+   114→      try {
+   115→        const [wl, favs] = await Promise.all([
+   116→          api.user<{ items: UserItem[] }>("watchlist"),
+   117→          api.user<{ items: UserItem[] }>("favorites"),
+   118→        ]);
+   119→        if (cancelled) return;
+   120→        setSavedIds(new Set(wl.items.map((i) => `${i.mediaType}:${i.mediaId}`)));
+   121→        setFavIds(new Set(favs.items.map((i) => `${i.mediaType}:${i.mediaId}`)));
+   122→      } catch { /* ignore */ }
+   123→    })();
+   124→    return () => { cancelled = true; };
+   125→  }, [authedStable, refreshKey]);
+   126→
+   127→  // profiluri
+   128→  useEffect(() => {
+   129→    if (!authed) return;
+   130→    let cancelled = false;
+   131→    api.user<{ items: Profile[] }>("profiles")
+   132→      .then((r) => {
+   133→        if (cancelled) return;
+   134→        setProfiles(r.items);
+   135→        setActiveProfile((prev) =>
+   136→          prev && r.items.some((p) => p.id === prev.id) ? prev : (r.items[0] ?? null)
+   137→        );
+   138→      })
+   139→      .catch(() => {});
+   140→    return () => { cancelled = true; };
+   141→  }, [authed]);
+   142→
+   143→  const keyOf = (i: MediaItem) => `${i.mediaType}:${i.id}`;
+   144→
+   145→  const viewSaved = authedStable ? savedIds : new Set<string>();
+   146→  const viewFav = authedStable ? favIds : new Set<string>();
+   147→
+   148→  const isSaved = useCallback(
+   149→    (i: MediaItem, kind: "watchlist" | "favorites") =>
+   150→      (kind === "watchlist" ? viewSaved : viewFav).has(keyOf(i)),
+   151→    [viewSaved, viewFav]
+   152→  );
+   153→
+   154→  const toggleList = useCallback(async (i: MediaItem, kind: "watchlist" | "favorites") => {
+   155→    if (!authed) {
+   156→      toast({ title: "Autentificare necesară", description: "Conectează-te cu Google pentru a salva titluri." });
+   157→      return;
+   158→    }
+   159→    const setter = kind === "watchlist" ? setSavedIds : setFavIds;
+   160→    const active = keyOf(i);
+   161→    try {
+   162→      const r = await api.userPost<{ active?: boolean }>({
+   163→        action: "toggle", kind,
+   164→        media: {
+   165→          mediaId: i.id, mediaType: i.mediaType, title: i.title, poster: i.poster,
+   166→          backdrop: i.backdrop, year: i.year, rating: i.rating, source: i.source || "tmdb",
+   167→        },
+   168→      });
+   169→      setter((prev) => {
+   170→        const next = new Set(prev);
+   171→        if (r.active) next.add(active); else next.delete(active);
+   172→        return next;
+   173→      });
+   174→      setRefreshKey((k) => k + 1);
+   175→      toast({
+   176→        title: r.active ? "Adăugat ✅" : "Eliminat",
+   177→        description: `${i.title} — ${kind === "watchlist" ? "watchlist" : "favorite"}`,
+   178→      });
+   179→    } catch {
+   180→      toast({ title: "Eroare la salvare", variant: "destructive" });
+   181→    }
+   182→  }, [authed]);
+   183→
+   184→  const openDetail = useCallback((i: MediaItem) => {
+   185→    setDetailItem(i); setDetailOpen(true);
+   186→  }, []);
+   187→
+   188→  const openPlayer = useCallback((i: MediaItem) => {
+   189→    setPlayerItem(i); setPlayerOpen(true);
+   190→  }, []);
+   191→
+   192→  const navigate = useCallback((v: string) => {
+   193→    setView(v as ViewKey);
+   194→    setSidebarOpen(false);
+   195→    window.scrollTo({ top: 0 });
+   196→  }, []);
+   197→
+   198→  // Faza 4: navigare din meniurile avansate — setează parametrul view-ului țintă
+   199→  const navigateExtra = useCallback((item: ExtraItem) => {
+   200→    if (item.view === "universuri") setUniversuriTab(item.param);
+   201→    else if (item.view === "showbiz") setShowbizTab(item.param);
+   202→    else if (item.view === "copii") setKidsBrand(item.param);
+   203→    else if (item.view === "stiri") setNewsContinent(item.param);
+   204→    setView(item.view);
+   205→    setSidebarOpen(false);
+   206→    window.scrollTo({ top: 0 });
+   207→  }, []);
+   208→
+   209→  // autocompletare live: debounce 180ms → /api/search?mode=suggest (Neon)
+   210→  // q gol → trending din search_stats (upsert_search_stat)
+   211→  useEffect(() => {
+   212→    const t = setTimeout(() => {
+   213→      sugAbort.current?.abort();
+   214→      const ac = new AbortController();
+   215→      sugAbort.current = ac;
+   216→      fetch(`/api/search?mode=suggest&q=${encodeURIComponent(searchInput.trim())}`, {
+   217→        signal: ac.signal,
+   218→        cache: "no-store",
+   219→      })
+   220→        .then((r) => (r.ok ? r.json() : { suggestions: [] }))
+   221→        .then((d: { suggestions?: string[] }) => {
+   222→          if (ac.signal.aborted) return;
+   223→          setSuggestions((d.suggestions || []).slice(0, 7));
+   224→          setSugIdx(-1);
+   225→        })
+   226→        .catch(() => {});
+   227→    }, 180);
+   228→    return () => clearTimeout(t);
+   229→  }, [searchInput]);
+   230→
+   231→  const pickSuggestion = useCallback(
+   232→    (s: string) => {
+   233→      setSearchInput(s);
+   234→      setSearchQuery(s);
+   235→      setShowSug(false);
+   236→      navigate("search");
+   237→    },
+   238→    [navigate]
+   239→  );
+   240→
+   241→  const submitSearch = (e: React.FormEvent) => {
+   242→    e.preventDefault();
+   243→    if (searchInput.trim()) {
+   244→      setSearchQuery(searchInput.trim());
+   245→      setShowSug(false);
+   246→      navigate("search");
+   247→    }
+   248→  };
+   249→
+   250→  const addProfile = async () => {
+   251→    if (!newProfile.name.trim()) return;
+   252→    try {
+   253→      const p = await api.userPost<Profile>({
+   254→        action: "add", kind: "profiles",
+   255→        profile: { name: newProfile.name.trim(), avatar: newProfile.avatar },
+   256→      });
+   257→      setProfiles((prev) => [...prev, p]);
+   258→      setActiveProfile(p);
+   259→      setProfileDialogOpen(false);
+   260→      setNewProfile({ name: "", avatar: "🎬" });
+   261→      toast({ title: "Profil creat ✅", description: p.name });
+   262→    } catch {
+   263→      toast({ title: "Eroare", description: "Nu am putut crea profilul.", variant: "destructive" });
+   264→    }
+   265→  };
+   266→
+   267→  const groups = Array.from(new Set(NAV.map((n) => n.group)));
+   268→
+   269→  const sidebarContent = (
+   270→    <>
+   271→      <div className="mb-6 flex items-center gap-2 px-4">
+   272→        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-red-600 text-lg font-black shadow-lg shadow-red-600/30">S</div>
+   273→        <div>
+   274→          <p className="text-base font-black leading-none tracking-tight">Stream<span className="text-red-500">Verse</span></p>
+   275→          <p className="mt-0.5 text-[10px] text-zinc-500">196 țări • 6 continente</p>
+   276→        </div>
+   277→      </div>
+   278→
+   279→      <nav className="flex-1 space-y-5 overflow-y-auto px-2 pb-4">
+   280→        {groups.map((g) => (
+   281→          <div key={g}>
+   282→            <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">{g}</p>
+   283→            {NAV.filter((n) => n.group === g).map((n) => (
+   284→              <button
+   285→                key={n.key}
+   286→                onClick={() => navigate(n.key)}
+   287→                className={`mb-0.5 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
+   288→                  view === n.key
+   289→                    ? "bg-red-600/15 text-red-400 ring-1 ring-red-600/30"
+   290→                    : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
+   291→                }`}
+   292→              >
+   293→                <n.icon className="h-4 w-4 shrink-0" />
+   294→                {n.label}
+   295→              </button>
+   296→            ))}
+   297→          </div>
+   298→        ))}
+   299→
+   300→        {EXTRA_GROUPS.map((g) => (
+   301→          <div key={g}>
+   302→            <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-700">{g}</p>
+   303→            {NAV_EXTRA.filter((n) => n.group === g).map((n) => {
+   304→              const active = view === n.view &&
+   305→                (n.view === "universuri" ? universuriTab === n.param
+   306→                  : n.view === "showbiz" ? showbizTab === n.param
+   307→                  : n.view === "copii" ? kidsBrand === n.param
+   308→                  : newsContinent === n.param);
+   309→              return (
+   310→                <button
+   311→                  key={n.label}
+   312→                  onClick={() => navigateExtra(n)}
+   313→                  title={`Deschide ${n.label}`}
+   314→                  className={`mb-0.5 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
+   315→                    active
+   316→                      ? "bg-red-600/15 text-red-400 ring-1 ring-red-600/30"
+   317→                      : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
+   318→                  }`}
+   319→                >
+   320→                  <span className="w-4 shrink-0 text-center text-base leading-none">{n.icon}</span>
+   321→                  <span className="flex-1 truncate">{n.label}</span>
+   322→                </button>
+   323→              );
+   324→            })}
+   325→          </div>
+   326→        ))}
+   327→      </nav>
+   328→
+   329→      <div className="border-t border-zinc-900 p-4">
+   330→        {authed ? (
+   331→          <div className="text-xs text-zinc-500">
+   332→            <p className="truncate font-semibold text-zinc-300">{session?.user?.name}</p>
+   333→            <p className="truncate">{session?.user?.email}</p>
+   334→          </div>
+   335→        ) : (
+   336→          <p className="text-xs text-zinc-600">Conectează-te pentru a salva favoritele și progresul.</p>
+   337→        )}
+   338→      </div>
+   339→    </>
+   340→  );
+   341→
+   342→  return (
+   343→    <div className="min-h-screen flex flex-col bg-[#0a0a0f]">
+   344→      {/* SIDEBAR desktop */}
+   345→      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-zinc-900 bg-[#0c0c12] lg:flex">
+   346→        {sidebarContent}
+   347→      </aside>
+   348→
+   349→      {/* SIDEBAR mobile */}
+   350→      {sidebarOpen && (
+   351→        <div className="fixed inset-0 z-50 lg:hidden">
+   352→          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
+   353→          <aside className="absolute inset-y-0 left-0 flex w-72 flex-col border-r border-zinc-900 bg-[#0c0c12]">
+   354→            <button
+   355→              aria-label="Închide meniul"
+   356→              onClick={() => setSidebarOpen(false)}
+   357→              className="absolute right-3 top-3 rounded-full p-1.5 text-zinc-400 hover:bg-zinc-800"
+   358→            >
+   359→              <X className="h-4 w-4" />
+   360→            </button>
+   361→            {sidebarContent}
+   362→          </aside>
+   363→        </div>
+   364→      )}
+   365→
+   366→      {/* TOPBAR */}
+   367→      <header className="sticky top-0 z-20 border-b border-zinc-900 bg-[#0a0a0f]/90 backdrop-blur-lg lg:pl-60">
+   368→        <div className="flex h-14 items-center gap-3 px-4 sm:px-6">
+   369→          <button
+   370→            aria-label="Deschide meniul"
+   371→            onClick={() => setSidebarOpen(true)}
+   372→            className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-900 lg:hidden"
+   373→          >
+   374→            <Menu className="h-5 w-5" />
+   375→          </button>
+   376→
+   377→          {/* Faza 8: buton global de încărcare conținut */}
+   378→          <button
+   379→            aria-label="Adaugă conținut"
+   380→            onClick={() => setAddOpen(true)}
+   381→            className="hidden h-9 shrink-0 items-center gap-1.5 rounded-full bg-red-600 px-3.5 text-xs font-bold text-white transition hover:bg-red-500 sm:flex"
+   382→          >
+   383→            <PlusCircle className="h-4 w-4" /> Adaugă
+   384→          </button>
+   385→
+   386→          <form onSubmit={submitSearch} className="relative max-w-md flex-1">
+   387→            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
+   388→            <Input
+   389→              value={searchInput}
+   390→              onChange={(e) => { setSearchInput(e.target.value); setShowSug(true); }}
+   391→              onFocus={() => setShowSug(true)}
+   392→              onBlur={() => setTimeout(() => setShowSug(false), 120)}
+   393→              onKeyDown={(e) => {
+   394→                if (!showSug || suggestions.length === 0) return;
+   395→                if (e.key === "ArrowDown") {
+   396→                  e.preventDefault();
+   397→                  setSugIdx((i) => (i + 1) % suggestions.length);
+   398→                } else if (e.key === "ArrowUp") {
+   399→                  e.preventDefault();
+   400→                  setSugIdx((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+   401→                } else if (e.key === "Enter" && sugIdx >= 0) {
+   402→                  e.preventDefault();
+   403→                  pickSuggestion(suggestions[sugIdx]);
+   404→                } else if (e.key === "Escape") {
+   405→                  setShowSug(false);
+   406→                }
+   407→              }}
+   408→              placeholder="Caută filme, seriale, anime, muzică..."
+   409→              className="h-9 border-zinc-800 bg-zinc-900/80 pl-8 text-sm text-zinc-200 placeholder:text-zinc-500 focus-visible:ring-red-600/50"
+   410→              aria-autocomplete="list"
+   411→              aria-expanded={showSug && suggestions.length > 0}
+   412→              role="combobox"
+   413→            />
+   414→            {showSug && suggestions.length > 0 && (
+   415→              <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/95 shadow-2xl shadow-black/60 backdrop-blur">
+   416→                <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
+   417→                  {searchInput.trim() ? "🧠 Sugestii din biblioteca Neon" : "🔥 Căutări populare acum"}
+   418→                </p>
+   419→                {suggestions.map((s, i) => (
+   420→                  <button
+   421→                    type="button"
+   422→                    key={`${s}:${i}`}
+   423→                    onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }}
+   424→                    onMouseEnter={() => setSugIdx(i)}
+   425→                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition ${
+   426→                      i === sugIdx ? "bg-red-600/20 text-red-300" : "text-zinc-300"
+   427→                    }`}
+   428→                  >
+   429→                    <Search className="h-3.5 w-3.5 shrink-0 text-zinc-600" />
+   430→                    <span className="truncate">{s}</span>
+   431→                  </button>
+   432→                ))}
+   433→              </div>
+   434→            )}
+   435→          </form>
+   436→
+   437→          <div className="ml-auto flex items-center gap-2">
+   438→            {/* profiluri */}
+   439→            {authed && profiles.length > 0 && (
+   440→              <div className="hidden items-center gap-1.5 sm:flex">
+   441→                {profiles.slice(0, 4).map((p) => (
+   442→                  <button
+   443→                    key={p.id}
+   444→                    onClick={() => setActiveProfile(p)}
+   445→                    title={p.name}
+   446→                    className={`flex h-8 w-8 items-center justify-center rounded-lg text-base ring-2 transition ${
+   447→                      activeProfile?.id === p.id ? "ring-red-600" : "ring-transparent hover:ring-zinc-600"
+   448→                    }`}
+   449→                    style={{ backgroundColor: `${p.color}33` }}
+   450→                  >
+   451→                    {p.avatar}
+   452→                  </button>
+   453→                ))}
+   454→                <button
+   455→                  onClick={() => setProfileDialogOpen(true)}
+   456→                  aria-label="Adaugă profil"
+   457→                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-zinc-500 ring-1 ring-zinc-800 hover:text-zinc-200"
+   458→                >
+   459→                  +
+   460→                </button>
+   461→              </div>
+   462→            )}
+   463→
+   464→            {authed ? (
+   465→              <DropdownMenu>
+   466→                <DropdownMenuTrigger asChild>
+   467→                  <button
+   468→                    aria-label="Meniu cont"
+   469→                    className="flex h-9 items-center gap-2 rounded-full bg-zinc-900 pl-1.5 pr-3 ring-1 ring-zinc-800 hover:ring-zinc-600 transition"
+   470→                  >
+   471→                    {session?.user?.image ? (
+   472→                       
+   473→                      <img src={session.user.image} alt="Avatar" className="h-6 w-6 rounded-full" referrerPolicy="no-referrer" />
+   474→                    ) : (
+   475→                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-red-600 text-xs font-black text-white">
+   476→                        {(session?.user?.name || "U").charAt(0).toUpperCase()}
+   477→                      </span>
+   478→                    )}
+   479→                    <span className="hidden max-w-[120px] truncate text-xs font-semibold text-zinc-200 sm:block">
+   480→                      {session?.user?.name}
+   481→                    </span>
+   482→                    <User className="h-3.5 w-3.5 text-zinc-500" />
+   483→                  </button>
+   484→                </DropdownMenuTrigger>
+   485→                <DropdownMenuContent align="end" className="border-zinc-800 bg-zinc-950 text-zinc-200">
+   486→                  <DropdownMenuLabel className="text-xs">
+   487→                    {session?.user?.email}
+   488→                  </DropdownMenuLabel>
+   489→                  <DropdownMenuSeparator className="bg-zinc-800" />
+   490→                  <DropdownMenuItem onClick={() => navigate("lista")} className="text-xs cursor-pointer">
+   491→                    <Bookmark className="h-3.5 w-3.5 mr-2" /> Lista mea
+   492→                  </DropdownMenuItem>
+   493→                  <DropdownMenuItem onClick={() => setProfileDialogOpen(true)} className="text-xs cursor-pointer">
+   494→                    <User className="h-3.5 w-3.5 mr-2" /> Gestionează profiluri
+   495→                  </DropdownMenuItem>
+   496→                  <DropdownMenuSeparator className="bg-zinc-800" />
+   497→                  <DropdownMenuItem
+   498→                    onClick={() => signOut()}
+   499→                    className="text-xs cursor-pointer text-red-400 focus:text-red-300"
+   500→                  >
+   501→                    <LogOut className="h-3.5 w-3.5 mr-2" /> Deconectare
+   502→                  </DropdownMenuItem>
+   503→                </DropdownMenuContent>
+   504→              </DropdownMenu>
+   505→            ) : (
+   506→              <DropdownMenu>
+   507→                <DropdownMenuTrigger asChild>
+   508→                  <button
+   509→                    aria-label="Conectare"
+   510→                    className="flex h-9 items-center gap-2 rounded-full bg-red-600 px-4 text-xs font-bold text-white transition hover:bg-red-500"
+   511→                  >
+   512→                    <LogIn className="h-3.5 w-3.5" /> Conectare
+   513→                  </button>
+   514→                </DropdownMenuTrigger>
+   515→                <DropdownMenuContent align="end" className="border-zinc-800 bg-zinc-950 text-zinc-200">
+   516→                  <DropdownMenuItem
+   517→                    onClick={() => signIn("google")}
+   518→                    className="text-xs cursor-pointer"
+   519→                  >
+   520→                    <span className="mr-2 text-sm">🌐</span> Continuă cu Google
+   521→                  </DropdownMenuItem>
+   522→                  <DropdownMenuItem
+   523→                    onClick={() => setLoginDialogOpen(true)}
+   524→                    className="text-xs cursor-pointer"
+   525→                  >
+   526→                    <span className="mr-2 text-sm">✉️</span> Conectare demo (email)
+   527→                  </DropdownMenuItem>
+   528→                </DropdownMenuContent>
+   529→              </DropdownMenu>
+   530→            )}
+   531→          </div>
+   532→        </div>
+   533→      </header>
+   534→
+   535→      {/* CONȚINUT */}
+   536→      <main className="flex-1 pb-10 lg:pl-60">
+   537→        {view === "acasa" && (
+   538→          <HomeView
+   539→            onPlay={openPlayer} onOpen={openDetail}
+   540→            onNavigate={navigate}
+   541→            isSaved={isSaved} onToggleList={toggleList}
+   542→            authed={authedStable}
+   543→          />
+   544→        )}
+   545→        {view === "filme" && (
+   546→          <LibraryView key="filme" title="Filme" emoji="🎬" description="Filmele tale din Neon — adăugate prin URL / iframe / embed / JS."
+   547→            type="movie" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   548→        )}
+   549→        {view === "seriale" && (
+   550→          <LibraryView key="seriale" title="Seriale" emoji="📺" description="Serialele tale din Neon — adăugate prin URL / iframe / embed / JS."
+   551→            type="series" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   552→        )}
+   553→        {view === "documentare" && (
+   554→          <LibraryView key="documentare" title="Documentare" emoji="🌍" description="Documentarele tale din Neon."
+   555→            type="documentary" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   556→        )}
+   557→        {view === "telenovele" && (
+   558→          <LibraryView key="telenovele" title="Telenovele" emoji="🌹" description="Telenovelele tale din Neon."
+   559→            type="telenovela" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   560→        )}
+   561→        {view === "anime" && (
+   562→          <LibraryView key="anime" title="Anime" emoji="🌸" description="Animele tale din Neon."
+   563→            type="anime" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   564→        )}
+   565→        {view === "muzica" && (
+   566→          <LibraryView key="muzica" title="Muzică" emoji="🎵" description="Videoclipuri și muzică din biblioteca ta."
+   567→            type="music" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   568→        )}
+   569→        {view === "copii" && (
+   570→          <LibraryView key={`copii-${kidsBrand}`} title="Copii & Desene" emoji="🧸" description="Desene animate și conținut pentru copii — filtru pe universuri."
+   571→            brands={[["disney", "🏰 Disney"], ["pixar", "💡 Pixar"], ["cartoon-network", "📺 Cartoon Network"], ["jetix", "⚡ Jetix"], ["fox-kids", "🦊 Fox Kids"], ["boomerang", "🪃 Boomerang"], ["minimax", "🎈 Minimax"], ["ghibli", "🌀 Ghibli"]]}
+   572→            brand={kidsBrand} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   573→        )}
+   574→        {view === "sport" && (
+   575→          <LibraryView key="sport" title="Sport" emoji="🏆" description="Meciuri și evenimente sportive din biblioteca ta."
+   576→            type="sport" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   577→        )}
+   578→        {view === "gaming" && (
+   579→          <LibraryView key="gaming" title="Gaming" emoji="🎮" description="Gameplay, turnee și streaming gaming."
+   580→            type="gaming" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   581→        )}
+   582→        {view === "stiri" && (
+   583→          <LibraryView key="stiri" title="Știri" emoji="📰" description="Canale de știri și jurnale din întreaga lume."
+   584→            type="news" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   585→        )}
+   586→        {view === "radio" && (
+   587→          <LibraryView key="radio" title="Radio Live" emoji="📻" description="Posturi de radio adăugate de tine."
+   588→            type="radio" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   589→        )}
+   590→        {view === "fun" && (
+   591→          <LibraryView key="fun" title="Distracție" emoji="😄" description="Videoclipuri de divertisment din biblioteca ta."
+   592→            type="video" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   593→        )}
+   594→        {view === "universuri" && (
+   595→          <LibraryView key={`uni-${universuriTab}`} title="Universuri" emoji="🦸" description="Colecții pe brand: Marvel, DC, blockbustere — filtru pe univers."
+   596→            brands={[["marvel", "🦸 Marvel"], ["dc", "🦇 DC"], ["blockbuster", "💥 Blockbustere"]]}
+   597→            brand={universuriTab} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   598→        )}
+   599→        {view === "showbiz" && (
+   600→          <LibraryView key={`sb-${showbizTab}`} title="TV & Show-biz" emoji="⭐" description="Emisiuni, reality TV și divertisment."
+   601→            type="showbiz" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+   602→        )}
+   603→        {view === "lista" && (
+   604→          <MyListView
+   605→            authed={authedStable}
+   606→            onOpen={openDetail} onPlay={openPlayer}
+   607→            isSaved={isSaved} onToggleList={toggleList}
+   608→            refreshKey={refreshKey}
+   609→          />
+   610→        )}
+   611→        {view === "colectii" && (
+   612→          <CollectionsView
+   613→            authed={authedStable}
+   614→            refreshKey={refreshKey}
+   615→            onOpen={openDetail} onPlay={openPlayer}
+   616→          />
+   617→        )}
+   618→        {view === "search" && (
+   619→          <SearchView
+   620→            query={searchQuery}
+   621→            onPlay={openPlayer} onOpen={openDetail}
+   622→            isSaved={isSaved} onToggleList={toggleList}
+   623→          />
+   624→        )}
+   625→      </main>
+   626→
+   627→      {/* FOOTER sticky */}
+   628→      <footer className="mt-auto border-t border-zinc-900 bg-[#0c0c12] py-5 lg:pl-60">
+   629→        <div className="px-4 text-center sm:px-6">
+   630→          <p className="text-xs text-zinc-500">
+   631→            <span className="font-black text-zinc-300">StreamVerse</span> — platforma ta de streaming universal.
+   632→            Conținut încărcat 100% de tine prin <span className="text-zinc-400">URL • iframe • embed • JavaScript</span> din orice sursă,
+   633→            stocat exclusiv în <span className="text-zinc-400">Neon Cloud</span>.
+   634→          </p>
+   635→          <p className="mt-1 text-[11px] text-zinc-600">
+   636→            Capacitate: 30.000.000.000 conținuturi • 10.000 căutări simultane • 10.000.000 utilizatori simultani — 6 continente, 196 de țări 🌍
+   637→          </p>
+   638→        </div>
+   639→      </footer>
+   640→
+   641→      {/* MODALS */}
+   642→      <DetailModal
+   643→        item={detailItem} open={detailOpen}
+   644→        onClose={() => setDetailOpen(false)}
+   645→        onPlay={(i) => { setDetailOpen(false); openPlayer(i); }}
+   646→        onOpenItem={openDetail}
+   647→        isSaved={isSaved} onToggleList={toggleList}
+   648→        authed={authedStable}
+   649→      />
+   650→      <PlayerModal
+   651→        item={playerItem} open={playerOpen}
+   652→        onClose={() => { setPlayerOpen(false); setPlayerItem(null); }}
+   653→        authed={authedStable}
+   654→      />
+   655→
+   656→      {/* Faza 8: STUDIO DE ÎNCĂRCARE UNIVERSAL — dialog global */}
+   657→      <LibraryAddDialog
+   658→        open={addOpen}
+   659→        onClose={() => setAddOpen(false)}
+   660→        onAdded={() => setRefreshKey((k) => k + 1)}
+   661→      />
+   662→
+   663→      {/* Faza 7: CURSOR AI AUTOMAT — comutator ON/OFF global */}
+   664→      <AICursor />
+   665→
+   666→      {/* DIALOG login demo */}
+   667→      <Dialog open={loginDialogOpen} onOpenChange={setLoginDialogOpen}>
+   668→        <DialogContent aria-describedby={undefined} className="max-w-sm border-zinc-800 bg-zinc-950 text-zinc-100">
+   669→          <DialogHeader>
+   670→            <DialogTitle className="text-lg font-black">Conectare demo</DialogTitle>
+   671→          </DialogHeader>
+   672→          <p className="text-xs text-zinc-500">
+   673→            Introdu un email oarecare pentru un cont demonstrativ. Datele se salvează în Neon Cloud.
+   674→          </p>
+   675→          <Input
+   676→            value={loginEmail}
+   677→            onChange={(e) => setLoginEmail(e.target.value)}
+   678→            type="email"
+   679→            placeholder="nume@exemplu.ro"
+   680→            className="border-zinc-800 bg-zinc-900 text-sm"
+   681→          />
+   682→          <button
+   683→            onClick={async () => {
+   684→              if (!loginEmail.includes("@")) {
+   685→                toast({ title: "Email invalid", variant: "destructive" });
+   686→                return;
+   687→              }
+   688→              const res = await signIn("credentials", {
+   689→                email: loginEmail,
+   690→                redirect: false,
+   691→              });
+   692→              if (res?.error) {
+   693→                toast({ title: "Autentificare eșuată", variant: "destructive" });
+   694→              } else {
+   695→                setLoginDialogOpen(false);
+   696→                window.location.reload();
+   697→              }
+   698→            }}
+   699→            className="w-full rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white hover:bg-red-500 transition"
+   700→          >
+   701→            Intră în cont
+   702→          </button>
+   703→        </DialogContent>
+   704→      </Dialog>
+   705→
+   706→      {/* DIALOG profil nou */}
+   707→      <Dialog open={profileDialogOpen} onOpenChange={setProfileDialogOpen}>
+   708→        <DialogContent aria-describedby={undefined} className="max-w-sm border-zinc-800 bg-zinc-950 text-zinc-100">
+   709→          <DialogHeader>
+   710→            <DialogTitle className="text-lg font-black">Profil nou</DialogTitle>
+   711→          </DialogHeader>
+   712→          <Input
+   713→            value={newProfile.name}
+   714→            onChange={(e) => setNewProfile((p) => ({ ...p, name: e.target.value }))}
+   715→            placeholder="Nume profil (ex. Copii, Mamă...)"
+   716→            className="border-zinc-800 bg-zinc-900 text-sm"
+   717→          />
+   718→          <div className="flex flex-wrap gap-2">
+   719→            {["🎬", "👶", "🦸", "🐱", "👽", "🤖", "🌸", "🦁"].map((a) => (
+   720→              <button
+   721→                key={a}
+   722→                onClick={() => setNewProfile((p) => ({ ...p, avatar: a }))}
+   723→                className={`flex h-10 w-10 items-center justify-center rounded-lg text-xl transition ${
+   724→                  newProfile.avatar === a ? "bg-red-600/30 ring-2 ring-red-600" : "bg-zinc-900 ring-1 ring-zinc-800 hover:bg-zinc-800"
+   725→                }`}
+   726→              >
+   727→                {a}
+   728→              </button>
+   729→            ))}
+   730→          </div>
+   731→          <button
+   732→            onClick={addProfile}
+   733→            className="w-full rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white hover:bg-red-500 transition"
+   734→          >
+   735→            Creează profilul
+   736→          </button>
+   737→        </DialogContent>
+   738→      </Dialog>
+   739→    </div>
+   740→  );
+   741→}
+   742→

@@ -160,12 +160,23 @@ export async function GET(req: NextRequest) {
         },
       },
       resilience: {
-        phase: 13,
+        phase: 14,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
         degradedMode: "stale-while-error — căutarea/sugestiile servesc cache-ul vechi când origin-ul e indisponibil; zero erori pentru utilizator",
         healthEndpoint: "/api/health — ping DB + stare breaker/gate + ultimele rulări ale cron-ului intern de mentenanță",
+      },
+      faza14: {
+        neonSync: {
+          enabled: true,
+          endpoint: "/api/sync (GET stare reală • POST push batch idempotent)",
+          ui: "buton „Neon Sync” în header — panou cu ping real, mărime DB, partiții, datele tale, coadă, jurnal",
+          outbox: "coadă în localStorage (max 500 ops) — scrierile offline (Listă/Favorite/progres/colecții) se sincronizează automat la revenirea online + la focus + la fiecare 60s",
+          idempotence: "tabela sync_seen (userId, opId) — re-trimiterea NU dublează nimic; colecțiile create offline primesc clientRef → serverId (cross-batch)",
+          journal: "tabela sync_log — fiecare rulare cu pushed/skipped/failed/durată/dispozitiv",
+          batchLimit: 200,
+        },
       },
       faza13: {
         pwa: {

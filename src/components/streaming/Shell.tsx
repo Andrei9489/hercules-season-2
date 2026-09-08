@@ -24,6 +24,8 @@ import { LibraryAddDialog } from "./LibraryAddDialog";
 import { DetailModal } from "./DetailModal";
 import { PlayerModal } from "./PlayerModal";
 import { AICursor } from "./AICursor";
+import { SyncButton } from "./SyncCenter";
+import { installAutoSync, drainQueue, subscribeSync } from "@/lib/sync-outbox";
 
 const NAV: { key: ViewKey; label: string; icon: typeof Home; group: string }[] = [
   { key: "acasa", label: "Acasă", icon: Home, group: "Principal" },
@@ -105,6 +107,14 @@ export function Shell() {
   const [loginEmail, setLoginEmail] = useState("");
   // Faza 8: dialog global de încărcare conținut (accesibil din toate meniurile)
   const [addOpen, setAddOpen] = useState(false);
+
+  // FAZA 14 — Neon Sync: auto-sync la pornire (drain coadă offline) + refresh liste după sincronizare
+  useEffect(() => {
+    installAutoSync();
+    if (typeof navigator !== "undefined" && navigator.onLine) void drainQueue();
+    const unsub = subscribeSync(() => setRefreshKey((k) => k + 1));
+    return unsub;
+  }, []);
 
   // încarcă watchlist + favorite
   useEffect(() => {
@@ -382,6 +392,9 @@ export function Shell() {
           >
             <PlusCircle className="h-4 w-4" /> Adaugă
           </button>
+
+          {/* Faza 14: Neon Sync — sincronizare + stare bază de date */}
+          <SyncButton />
 
           <form onSubmit={submitSearch} className="relative max-w-md flex-1">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />

@@ -206,6 +206,11 @@ export function CapacityPanel() {
                   </p>
                 </>
               )}
+              {st.faza14 && (
+                <p className="mt-1 truncate text-[10px] text-zinc-600">
+                  🔄 Neon Sync (Faza 14): buton în header + /api/sync — coadă offline outbox (scrieri offline → Neon automat la revenire), idempotent prin sync_seen, jurnal per rulare în sync_log
+                </p>
+              )}
               {st.faza11 && (
                 <>
                   <p className="mt-1 truncate text-[10px] text-zinc-600">

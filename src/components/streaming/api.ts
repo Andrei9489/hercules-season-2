@@ -1,6 +1,8 @@
 "use client";
 
 // Helperi de fetch pentru API-urile interne
+import { enqueueOfflineWrite } from "@/lib/sync-outbox";
+
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`API ${res.status}`);
@@ -8,11 +10,30 @@ async function get<T>(url: string): Promise<T> {
 }
 
 async function post<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  // FAZA 14 — Neon Sync: scrierile făcute OFFLINE intră în coada outbox
+  // (localStorage) și ajung în Neon la prima sincronizare. Răspuns sintetic
+  // „queued" pentru UI optimist; serverul aplică operațiunile idempotent.
+  const writeUrl = url === "/api/user" || url === "/api/collections";
+  const offline = typeof navigator !== "undefined" && !navigator.onLine;
+  if (writeUrl && offline && typeof body === "object" && body !== null) {
+    const synthetic = enqueueOfflineWrite(url, body as Record<string, unknown>);
+    if (synthetic) return synthetic as T;
+  }
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    // rețea picată în timpul fetch-ului (trecere offline / drop) → outbox
+    if (writeUrl && typeof body === "object" && body !== null) {
+      const synthetic = enqueueOfflineWrite(url, body as Record<string, unknown>);
+      if (synthetic) return synthetic as T;
+    }
+    throw err;
+  }
   if (!res.ok) throw new Error(`API ${res.status}`);
   return res.json();
 }

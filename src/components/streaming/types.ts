@@ -115,6 +115,17 @@ export type CapacityStatus = {
       configurare: string;
     };
   };
+  faza14?: {
+    neonSync: {
+      enabled: boolean;
+      endpoint: string;
+      ui: string;
+      outbox: string;
+      idempotence: string;
+      journal: string;
+      batchLimit: number;
+    };
+  };
   userDriven?: {
     import: {
       sources: string;

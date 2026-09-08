@@ -52,6 +52,7 @@ const API_NEVER = [
   "/api/auth",
   "/api/user",
   "/api/collections",
+  "/api/sync",
   "/api/stream",
   "/api/maintain",
   "/api/health",
