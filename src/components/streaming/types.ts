@@ -95,6 +95,26 @@ export type CapacityStatus = {
     swr: { search: boolean; suggest: boolean; trending: boolean; edgeOffloadPct: number; note: string };
     replicaProbe: string;
   };
+  faza13?: {
+    pwa: {
+      enabled: boolean;
+      manifest: string;
+      serviceWorker: string;
+      apiSwr: string[];
+      neverCached: string[];
+      offloadNote: string;
+      escap: string;
+    };
+    cronIntern: {
+      enabled: boolean;
+      intervalH: number;
+      bootDelayS: number;
+      lockMechanism: string;
+      journal: string;
+      observability: string;
+      configurare: string;
+    };
+  };
   userDriven?: {
     import: {
       sources: string;

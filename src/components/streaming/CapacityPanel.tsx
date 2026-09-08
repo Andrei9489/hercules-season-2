@@ -196,6 +196,16 @@ export function CapacityPanel() {
                   </p>
                 </>
               )}
+              {st.faza13 && (
+                <>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    📱 PWA instalabilă (Faza 13): manifest + service worker — shell offline, static cache-first, API publice stale-while-revalidate în browser ({st.faza13.pwa.apiSwr.length} endpoint-uri) → repeat-view zero origin
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    ⏰ Cron intern mentenanță: la fiecare {st.faza13.cronIntern.intervalH}h în procesul server • advisory lock Neon (1 instanță rulează din N) • jurnal în maintain_log • vizibil în /api/health
+                  </p>
+                </>
+              )}
               {st.faza11 && (
                 <>
                   <p className="mt-1 truncate text-[10px] text-zinc-600">

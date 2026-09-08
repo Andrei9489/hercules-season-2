@@ -160,12 +160,32 @@ export async function GET(req: NextRequest) {
         },
       },
       resilience: {
-        phase: 12,
+        phase: 13,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
         degradedMode: "stale-while-error — căutarea/sugestiile servesc cache-ul vechi când origin-ul e indisponibil; zero erori pentru utilizator",
-        healthEndpoint: "/api/health — ping DB + stare breaker/gate pentru monitorizare și failover",
+        healthEndpoint: "/api/health — ping DB + stare breaker/gate + ultimele rulări ale cron-ului intern de mentenanță",
+      },
+      faza13: {
+        pwa: {
+          enabled: true,
+          manifest: "/manifest.webmanifest",
+          serviceWorker: "/sw.js (scope /) — shell precache, navigări network-first cu fallback offline, static hashuit cache-first",
+          apiSwr: ["/api/browse", "/api/library", "/api/channels", "/api/search", "/api/tmdb", "/api/tv", "/api/anime", "/api/music", "/api/sports", "/api/gaming", "/api/kids", "/api/news", "/api/fun", "/api/subtitles"],
+          neverCached: ["/api/auth", "/api/user", "/api/collections", "/api/stream", "/api/maintain", "/api/health", "/api/status", "/api/ai"],
+          offloadNote: "SWR în service worker → repeat-view-uri ale utilizatorului nu mai ating origin-ul deloc (peste offload-ul edge CDN 83,8% din Faza 12) — ținta 10M utilizatori",
+          escap: "?nosw → auto-unregister (depanare)",
+        },
+        cronIntern: {
+          enabled: true,
+          intervalH: 6,
+          bootDelayS: 45,
+          lockMechanism: "pg_try_advisory_lock pe Neon (sesiune dedicată din pool RW) — pe N instanțe DOAR una rulează",
+          journal: "tabel maintain_log (idempotent): trigger, ok, durată, raport JSON",
+          observability: "/api/health → block maintain.lastRun",
+          configurare: "MAINTENANCE_INTERVAL_H / MAINTENANCE_FIRST_DELAY_MS / MAINTENANCE_ENABLED=0",
+        },
       },
       faza11: {
         collections: {
@@ -185,7 +205,7 @@ export async function GET(req: NextRequest) {
         maintenance: {
           endpoint: "/api/maintain (POST, x-maintain-token)",
           operations: ["ensure_partitions — partiții search_logs automate până în anul curent +3", "cleanup_cache — șterge rândurile expirate din search_cache (L2)", "refresh_rollup — re-materializează bucket-ele sugestii 1-3", "stats — raport sănătate"],
-          cronRecomandat: "producție: la fiecare 6-12 ore",
+          cronRecomandat: "Faza 13: cron INTERN în procesul server (6h, advisory lock) — endpoint-ul rămâne pentru declanșare manuală/externă",
         },
       },
       faza12: {

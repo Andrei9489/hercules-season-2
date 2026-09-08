@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { q, qRead, replicaEnabled } from "@/lib/pg";
 import { breakerStatus, gateStatus } from "@/lib/circuit-breaker";
+import { lastMaintainRun } from "@/lib/maintain-scheduler";
 
 // ============================================================
 // /api/health (Faza 9) — health-check rapid pentru monitorizare
@@ -55,6 +56,10 @@ export async function GET() {
       },
       breaker: breakerStatus(),
       gate: gateStatus(),
+      maintain: {
+        lastRun: lastMaintainRun(),
+        note: "cron intern Faza 13 — rulează la fiecare 6h în procesul server, cu advisory lock Neon (jurnal în maintain_log)",
+      },
       at: new Date().toISOString(),
     },
     { status: ok ? 200 : 503 }

@@ -17,10 +17,11 @@
 //  - rollback manual: content_old rămâne pe disc până la verificarea finală
 // Rulează: bun scripts/init-neon-v12.ts
 // ============================================================
-import { Pool } from "@neondatabase/serverless";
+import { Pool, neonConfig } from "@neondatabase/serverless";
 import WebSocket from "ws";
 
-(require("@neondatabase/serverless") as { neonConfig: { webSocketConstructor: unknown } }).neonConfig.webSocketConstructor = WebSocket;
+neonConfig.webSocketConstructor = WebSocket as unknown as typeof globalThis.WebSocket;
+
 
 const DB_URL = process.env.NEON_DATABASE_URL || "postgresql://neondb_owner:npg_k8zGXZEKr5xV@ep-sparkling-leaf-b2wkkjbz-pooler.c-6.eu-central-1.aws.neon.tech/neondb?sslmode=require";
 const pool = new Pool({ connectionString: DB_URL, max: 3, connectionTimeoutMillis: 15_000, statement_timeout: 60_000 });

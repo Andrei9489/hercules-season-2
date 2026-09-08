@@ -197,3 +197,25 @@ export async function qOne<T = Record<string, unknown>>(
   const rows = await q<T>(sql, params);
   return rows[0] ?? null;
 }
+
+/**
+ * Faza 13: împrumută UN client dedicat din pool-ul RW pentru durata unui
+ * bloc de operații pe aceeași sesiune (ex. pg_try_advisory_lock/unlock —
+ * lock-ul de sesiune e valabil doar pe conexiunea care l-a luat).
+ * Clientul e returnat pool-ului în finally, indiferent de rezultat.
+ */
+export async function withRwClient<T>(
+  fn: (client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> }) => Promise<T>
+): Promise<T> {
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    return await fn(client as unknown as Parameters<typeof fn>[0]);
+  } finally {
+    try {
+      client.release();
+    } catch {
+      /* client deja eliberat */
+    }
+  }
+}

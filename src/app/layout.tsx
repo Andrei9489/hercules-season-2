@@ -4,6 +4,7 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { SessionProvider } from "@/components/streaming/SessionProvider";
 import { ScrollTop } from "@/components/streaming/ScrollTop";
+import { PWARegister } from "@/components/streaming/PWARegister";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -20,7 +21,21 @@ export const metadata: Metadata = {
   description:
     "Platforma de streaming supremă: filme, seriale, anime, desene animate, muzică, documentare, telenovele, sport, gaming și știri — din 6 continente și 196 de țări.",
   keywords: ["streaming", "filme", "seriale", "anime", "muzică", "sport", "disney", "marvel", "cartoon network"],
-  icons: { icon: "/logo.svg" },
+  applicationName: "StreamVerse",
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "StreamVerse",
+  },
+  formatDetection: { telephone: false },
 };
 
 export const viewport: Viewport = {
@@ -41,6 +56,7 @@ export default function RootLayout({
           {children}
           <ScrollTop />
         </SessionProvider>
+        <PWARegister />
         <Toaster />
       </body>
     </html>
