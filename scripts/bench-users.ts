@@ -10,7 +10,7 @@
 // Rulează: bun scripts/bench-users.ts [concurenți]
 // ============================================================
 
-const BASE = "http://localhost:3000";
+const BASE = process.env.BENCH_BASE || "http://localhost:3000";
 const CONC = Number(process.argv[2]) || 150;
 const DURATION_S = 20;
 

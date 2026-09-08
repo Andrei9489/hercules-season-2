@@ -140,8 +140,8 @@ export function CapacityPanel() {
               )}
               {st.benchmark && (
                 <p className="mt-1 truncate text-[10px] text-zinc-600">
-                  📊 Benchmark real (Faza {c.engine.phase}): {st.benchmark.peakLocalRps} req/s pe 1 instanță • 0 erori la{" "}
-                  {st.benchmark.concurrent300 ? "300" : "150"} concurenți • suggest 300x: {st.benchmark.suggest300?.rps ?? "—"} req/s •
+                  📊 Benchmark real (Faza {c.engine.phase}): {st.benchmark.peakLocalRps} req/s pe cluster{" "}
+                  {st.benchmark.cluster ? `(${st.benchmark.cluster.instances} instanțe + LB, ${st.benchmark.cluster.rps} r/s vs ${st.benchmark.singleInstanceRps} pe instanță unică)` : "1 instanță"} •
                   radio: {st.benchmark.radio ? `${st.benchmark.radio.rps} req/s (P50 ${st.benchmark.radio.p50Ms}ms)` : "—"} • cache L1+L2 distribuit{" "}
                   {st.search.cacheL2?.enabled ? "în Neon (cross-instance)" : ""} • cache-hit{" "}
                   {st.benchmark.concurrent300?.cacheHitPct ?? st.benchmark.concurrent150.cacheHitPct}%
@@ -210,6 +210,29 @@ export function CapacityPanel() {
                 <p className="mt-1 truncate text-[10px] text-zinc-600">
                   🔄 Neon Sync (Faza 14): buton în header + /api/sync — coadă offline outbox (scrieri offline → Neon automat la revenire), idempotent prin sync_seen, jurnal per rulare în sync_log
                 </p>
+              )}
+              {st.faza15 && (
+                <>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🧱 Sharding multi-compute (Faza 15): {st.faza15.sharding.activeComputes} compute-uri ACTIVE din {st.faza15.sharding.totalRegistered} înregistrate • plafon dinamic{" "}
+                    {(st.faza15.sharding.engineCeilingDynamic / 1_000_000).toFixed(0)}M rânduri ({((st.faza15.sharding.engineCeilingDynamic / 30_000_000_000) * 100).toFixed(2)}% din 30 mld) •
+                    30 mld = {st.faza15.sharding.computeFor30B.atX64} compute-uri x64 sau {st.faza15.sharding.computeFor30B.atX256} x256
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    ⚙️ Rutare: {st.faza15.sharding.routing} • {st.faza15.sharding.search}
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🧪 Validare: {st.faza15.sharding.validation} • {st.faza15.sharding.admin}
+                  </p>
+                  {st.faza15.sharding.shards.length > 0 && (
+                    <p className="mt-1 truncate text-[10px] text-zinc-600">
+                      📡 Shard-uri: {st.faza15.sharding.shards.map((s) => `${s.name} [${s.state}${s.lastPingMs != null ? ` • ${s.lastPingMs}ms` : ""}]`).join(" • ")}
+                    </p>
+                  )}
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🏭 Producție (Faza 15): {st.faza15.production.build} • {st.faza15.production.scaleOut}
+                  </p>
+                </>
               )}
               {st.faza11 && (
                 <>

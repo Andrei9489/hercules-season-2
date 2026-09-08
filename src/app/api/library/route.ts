@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { authOptions } from "@/lib/auth";
 import { searchLibrary, insertContent, recordPlayback, normalizeRo, invalidateSearchCache } from "@/lib/neon-search";
 import { q, qOne } from "@/lib/pg";
+import { shardMapByRemoteId, shardQuery } from "@/lib/shards";
 import { resolveSource, titleFromUrl } from "@/lib/source-resolver";
 import { parseSigningConfig } from "@/lib/stream-sign";
 import { parseM3U, normalizeM3UInputUrl, type M3UChannel } from "@/lib/m3u-parser";
@@ -74,13 +75,29 @@ export async function GET(req: NextRequest) {
     // FAZA 11: ?id=<numeric> — item unic (pentru reluare din istoric/colecții)
     const idParam = sp.get("id");
     if (idParam && /^\d+$/.test(idParam)) {
-      const rows = await q<Item>(
+      let rows = await q<Item>(
         `SELECT id, external_id, title, original_title, description, content_type, brand, category,
                 continent, country, provider, source_type, source_url, embed_code, thumbnail, backdrop,
                 year, rating, popularity, views, (meta ? 'signing') AS signed, 0 AS score
          FROM content WHERE id = $1 LIMIT 1`,
         [Number(idParam)]
       );
+      // FAZA 15 — rezolvare CROSS-SHARD: id-ul nu e pe primar → content_shard_map
+      // (remote_id → shard) → citire directă de pe compute-ul deținător.
+      if (rows.length === 0) {
+        const mapped = await shardMapByRemoteId(Number(idParam)).catch(() => null);
+        if (mapped) {
+          const remote = await shardQuery<Item>(
+            mapped.shard,
+            `SELECT id, external_id, title, original_title, description, content_type, brand, category,
+                    continent, country, provider, source_type, source_url, embed_code, thumbnail, backdrop,
+                    year, rating, popularity, views, (meta ? 'signing') AS signed, 0 AS score
+             FROM content WHERE id = $1 LIMIT 1`,
+            [Number(idParam)]
+          ).catch(() => [] as Item[]);
+          rows = remote;
+        }
+      }
       hits = rows.map(rowToHit);
     } else if (query.trim()) {
       const r = await searchLibrary(query, { limit, offset, type, brand });

@@ -10,6 +10,15 @@
 // Țintă finală: 30 miliarde itemi • 10.000 căutări simultane.
 // ============================================================
 import { q, qOne, qRead, AdmissionRejected, DbUnavailable } from "./pg";
+import {
+  getActiveShards,
+  execOnAllShards,
+  pickShardFor,
+  shardQuery,
+  shardMapUpsert,
+  shardMapLookup,
+  type Shard,
+} from "./shards";
 
 /** Normalizează text RO/EN: fără diacritice, lowercase, doar [a-z0-9 spații]. */
 export function normalizeRo(s: string): string {
@@ -195,54 +204,8 @@ function searchRecompute(
       return hits;
     }
 
-    // to_tsquery cu prefix per termen: "marii pitici" -> marii:* & pitici:*
-    const terms = norm.split(" ").filter(Boolean).slice(0, 8).map((t) => t.replace(/[^\w]/g, ""));
-    const tsq = terms.map((t) => `${t}:*`).join(" & ");
-    const prefix = norm.replace(/[^\w\s]/g, "");
+    const hits = await runSearchFanout(norm, limit, offset, type, brand);
 
-    const conditions: string[] = [];
-    const params: unknown[] = [];
-    let p = 0;
-    const next = (v: unknown): string => {
-      params.push(v);
-      p++;
-      return `$${p}`;
-    };
-
-    // FIX 42P18: parametrii se alocă DOAR dacă sunt referențiați în SQL —
-    // pentru prefixuri scurte (<3) pNorm nu era folosit nicăieri și Postgres
-    // respicea statementul ("could not determine data type of parameter $1").
-    const pTsq = next(tsq);
-    const pPrefix = next(prefix + "%");
-    let pSim = "";
-    if (prefix.length >= 3) {
-      pSim = next(norm);
-      conditions.push(`search_text % ${pSim}`);
-    }
-    const pLike = next(`%${prefix}%`);
-    conditions.push(`search_text LIKE ${pLike}`);
-
-    const scoreExpr = `
-    (ts_rank(search_tsv, to_tsquery('simple', ${pTsq})) * 8
-     ${pSim ? `+ similarity(search_text, ${pSim}) * 3` : ""}
-     + CASE WHEN search_text LIKE ${pPrefix} THEN 3 ELSE 0 END
-     + LEAST(popularity, 5000) / 5000.0 * 1.2)`;
-
-    let where = `(${conditions.join(" OR ")})`;
-    if (type) where += ` AND content_type = ${next(type)}`;
-    if (brand) where += ` AND brand = ${next(brand)}`;
-
-    const sql = `
-    SELECT id, external_id, title, original_title, description, content_type, brand,
-           category, continent, country, provider, source_type, source_url, embed_code,
-           thumbnail, backdrop, year, rating, popularity, views, ${scoreExpr} AS score
-    FROM content
-    WHERE ${where}
-    ORDER BY score DESC, popularity DESC, id DESC
-    LIMIT ${next(limit)} OFFSET ${next(offset)}`;
-
-    const rows = await qRead<Record<string, unknown>>(sql, params);
-    const hits = rows.map(mapHit);
     // Faza 12: scriem în cache DOAR dacă între timp nu a venit o invalidare
     if (gen === cacheGeneration) {
       cacheSet(cacheKey, hits);
@@ -250,6 +213,107 @@ function searchRecompute(
     }
     return hits;
   })();
+}
+
+/**
+ * Faza 15 — EXECUȚIE DE CĂUTARE (multi-shard):
+ * - 1 shard activ (implicit) → interogare directă pe primar (calea clasică)
+ * - N shard-uri active → SCATTER-GATHER: interogarea rulează pe TOATE
+ *   compute-urile în paralel (fiecare cu LIMIT limit+offset, OFFSET 0),
+ *   rezultatele se combină global pe score și se taie fereastra cerută.
+ *   Un shard picat NU blochează căutarea (toleranță parțială).
+ */
+async function runSearchFanout(
+  norm: string,
+  limit: number,
+  offset: number,
+  type?: string,
+  brand?: string
+): Promise<LibraryHit[]> {
+  const active = await getActiveShards().catch(() => [] as Shard[]);
+  if (active.length > 1) {
+    const scatter = await execOnAllShards((shard) =>
+      runSearchOnShard(shard, norm, limit + offset, 0, type, brand)
+    );
+    if (scatter.errors.length) {
+      console.warn(`[shards] căutare parțială (${scatter.answered}/${scatter.total}): ${scatter.errors.join(" | ")}`);
+    }
+    const merged = scatter.results.flat();
+    merged.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.id - a.id);
+    return merged.slice(offset, offset + limit);
+  }
+  const rows = await qRead<Record<string, unknown>>(...buildSearchQuery(norm, limit, offset, type, brand));
+  return rows.map(mapHit);
+}
+
+/** Rulează interogarea de căutare pe UN shard specific (local sau remote). */
+async function runSearchOnShard(
+  shard: Shard,
+  norm: string,
+  limit: number,
+  offset: number,
+  type?: string,
+  brand?: string
+): Promise<LibraryHit[]> {
+  const [sql, params] = buildSearchQuery(norm, limit, offset, type, brand);
+  const rows = await shardQuery<Record<string, unknown>>(shard, sql, params);
+  return rows.map(mapHit);
+}
+
+/** Construiește SQL-ul de căutare FTS+trigram (identic pe toate shard-urile). */
+function buildSearchQuery(
+  norm: string,
+  limit: number,
+  offset: number,
+  type?: string,
+  brand?: string
+): [string, unknown[]] {
+  // to_tsquery cu prefix per termen: "marii pitici" -> marii:* & pitici:*
+  const terms = norm.split(" ").filter(Boolean).slice(0, 8).map((t) => t.replace(/[^\w]/g, ""));
+  const tsq = terms.map((t) => `${t}:*`).join(" & ");
+  const prefix = norm.replace(/[^\w\s]/g, "");
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let p = 0;
+  const next = (v: unknown): string => {
+    params.push(v);
+    p++;
+    return `$${p}`;
+  };
+
+  // FIX 42P18: parametrii se alocă DOAR dacă sunt referențiați în SQL —
+  // pentru prefixuri scurte (<3) pNorm nu era folosit nicăieri și Postgres
+  // respicea statementul ("could not determine data type of parameter $1").
+  const pTsq = next(tsq);
+  const pPrefix = next(prefix + "%");
+  let pSim = "";
+  if (prefix.length >= 3) {
+    pSim = next(norm);
+    conditions.push(`search_text % ${pSim}`);
+  }
+  const pLike = next(`%${prefix}%`);
+  conditions.push(`search_text LIKE ${pLike}`);
+
+  const scoreExpr = `
+    (ts_rank(search_tsv, to_tsquery('simple', ${pTsq})) * 8
+     ${pSim ? `+ similarity(search_text, ${pSim}) * 3` : ""}
+     + CASE WHEN search_text LIKE ${pPrefix} THEN 3 ELSE 0 END
+     + LEAST(popularity, 5000) / 5000.0 * 1.2)`;
+
+  let where = `(${conditions.join(" OR ")})`;
+  if (type) where += ` AND content_type = ${next(type)}`;
+  if (brand) where += ` AND brand = ${next(brand)}`;
+
+  const sql = `
+    SELECT id, external_id, title, original_title, description, content_type, brand,
+           category, continent, country, provider, source_type, source_url, embed_code,
+           thumbnail, backdrop, year, rating, popularity, views, ${scoreExpr} AS score
+    FROM content
+    WHERE ${where}
+    ORDER BY score DESC, popularity DESC, id DESC
+    LIMIT ${next(limit)} OFFSET ${next(offset)}`;
+  return [sql, params];
 }
 
 /** Faza 12: kick asincron de revalidare (single-flight prin inFlight). */
@@ -339,7 +403,7 @@ export async function searchLibrary(
   }
 }
 
-function mapHit(r: Record<string, unknown>): LibraryHit {
+export function mapHit(r: Record<string, unknown>): LibraryHit {
   return {
     id: Number(r.id),
     externalId: String(r.external_id),
@@ -693,14 +757,12 @@ export type NewContent = {
   createdBy?: string | null;
 };
 
-export async function insertContent(c: NewContent): Promise<LibraryHit | null> {
+/** SQL de inserare conținut — IDENTIC pe toate shard-urile (schema comună). */
+function contentInsertValues(c: NewContent): [string, unknown[]] {
   const search_text = normalizeRo(
     [c.title, c.originalTitle || "", c.description || "", (c.tags || []).join(" "), c.brand || "", c.contentType, c.category || "", c.provider].join(" ")
   );
-  // dedup pe external_id la nivel de aplicație (partiționare hash nu permite unique global)
-  const dup = await qOne<{ id: number }>(`SELECT id FROM content WHERE external_id = $1 LIMIT 1`, [c.externalId]);
-  if (dup) return null;
-  const rows = await q<Record<string, unknown>>(
+  return [
     `INSERT INTO content
        (external_id, title, original_title, description, content_type, brand, category,
         continent, country, language, provider, source_type, source_url, embed_code,
@@ -713,8 +775,48 @@ export async function insertContent(c: NewContent): Promise<LibraryHit | null> {
       c.language || "en", c.provider, c.sourceType, c.sourceUrl || null, c.embedCode || null,
       c.thumbnail || null, c.year || null, c.tags || [], search_text,
       JSON.stringify(c.meta || {}), c.createdBy || null,
-    ]
-  );
+    ],
+  ];
+}
+
+/**
+ * FAZA 15 — INSERARE RUTATĂ PE SHARD:
+ * - hash(external_id) → shard activ (determinist, ponderat);
+ * - shard remote → INSERT pe compute-ul lui + înregistrare în content_shard_map
+ *   (external_id → shard_id + remote_id, pentru lookup-uri cross-compute);
+ * - shard picat → FALLBACK pe primar (disponibilitate > plasament);
+ * - 1 shard activ → calea clasică locală (comportament identic pre-Faza 15).
+ */
+export async function insertContent(c: NewContent): Promise<LibraryHit | null> {
+  // dedup pe external_id la nivel de aplicație (partiționare hash nu permite unique global)
+  const shard = await pickShardFor(c.externalId).catch(() => null);
+
+  if (shard && shard.kind === "remote" && shard.dsn) {
+    // dedup cross-compute: hartă de rutare → primar → shard-ul țintă
+    const mapped = await shardMapLookup(c.externalId).catch(() => null);
+    if (mapped) return null;
+    const dupLocal = await qOne<{ id: number }>(`SELECT id FROM content WHERE external_id = $1 LIMIT 1`, [c.externalId]).catch(() => null);
+    if (dupLocal) return null;
+    const [sql, params] = contentInsertValues(c);
+    try {
+      const dupRemote = await shardQuery<{ id: number }>(shard, `SELECT id FROM content WHERE external_id = $1 LIMIT 1`, [c.externalId]);
+      if (dupRemote[0]) {
+        await shardMapUpsert(c.externalId, shard.id, Number(dupRemote[0].id));
+        return null;
+      }
+      const rows = await shardQuery<Record<string, unknown>>(shard, sql, params);
+      const hit = rows[0] ? mapHit(rows[0]) : null;
+      if (hit) await shardMapUpsert(c.externalId, shard.id, hit.id);
+      invalidateSearchCache("sl:");
+      return hit;
+    } catch (e) {
+      console.error(`[shards] insert pe ${shard.name} eșuat, fallback pe primar:`, String(e).slice(0, 120));
+      // cade pe calea locală de mai jos
+    }
+  }
+
+  const [sql, params] = contentInsertValues(c);
+  const rows = await q<Record<string, unknown>>(sql, params);
   invalidateSearchCache("sl:");
   return rows[0] ? mapHit(rows[0]) : null;
 }

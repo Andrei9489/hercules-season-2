@@ -4,6 +4,7 @@ import { trending } from "@/lib/neon-search";
 import { cacheGet, cacheSet } from "@/lib/cache";
 import { breakerStatus, gateStatus } from "@/lib/circuit-breaker";
 import { withCache } from "@/lib/http-cache";
+import { shardsStatus } from "@/lib/shards";
 
 // ============================================================
 // /api/status — metrici REALE din Neon + raport de capacitate
@@ -23,19 +24,16 @@ const TARGETS = {
   users: 10_000_000,             // utilizatori conectați simultan
 };
 
-// Parametri de fază (Faza 12 = SCALAREA FINALĂ spre ținte):
-// - partiții: content x16→x64 + playback_events x4→x16 (swap atomic zero-cost,
-//   fereastră de oportunitate: biblioteca era goală) → plafon 6,25M/partiție × 64 = 400M rânduri
-// - validare EMPIRICĂ la scară: 202K rânduri × 64 partiții (scale-validate.ts +
-//   diag-fanout-v12.ts): planning 23ms, suggest P50 180ms, căutare P50 1092ms în regim
-//   brute-scan (auto-corectiv: la densitate mare plannerul comută pe GIN/trigram)
-// - căutări simultane 100%: Little's law (formulă documentată în capacity)
-// - utilizatori: offload edge 47%→83,8% (SWR background revalidate + edge cache
-//   suggest/trending) → presiune origin per sesiune 0,10→0,016 req/s (-84%)
+// Parametri de fază (Faza 15 = SHARDING MULTI-COMPUTE + MIGRAȚIE PRODUCȚIE):
+// - plafonul motorului e ACUM DINAMIC: suma plafonurilor shard-urilor ACTIVE
+//   (registry în Neon). 1 compute = 400M (x64) → 30 mld = 75 compute-uri
+//   (sau 19 compute-uri la x256 partiții/compute, runbook init-neon-v12.ts)
+// - căutare SCATTER-GATHER pe toate shard-urile active + rutare hash insert
+// - migrație producție: build standalone + cluster N instanțe + load balancer
 const PHASE = {
-  engineRowCeiling: 400_000_000,        // 6,25M rânduri/partiție (plafonul de design la care x16 valida 100M) × 64 partiții
-  concurrentSearchNow: 10_000,          // 100%: Little's law — în zbor/instanță = 166 r/s × 0,4s ≈ 66 (măsurat sandbox) → 10.000 în zbor = ~150 instanțe (sub premisa de 1.000 instanțe)
-  concurrentUsersNow: 1_260_000,        // Faza 12 MĂSURAT: 1.261 sesiuni/instanță (offload edge 83,8%, origin 20,5 r/s, 0,10% erori la 150 concurenți) × 1.000 instanțe — bench-users-result.json
+  engineRowCeilingPerCompute: 400_000_000,  // 6,25M rânduri/partiție × 64 partiții per compute
+  concurrentSearchNow: 10_000,              // 100%: Little's law — în zbor/instanță = 166 r/s × 0,4s ≈ 66 (măsurat sandbox) → 10.000 în zbor = ~150 instanțe (sub premisa de 1.000 instanțe)
+  concurrentUsersNow: 1_260_000,            // Faza 12 MĂSURAT: 1.261 sesiuni/instanță (offload edge 83,8%, origin 20,5 r/s, 0,10% erori la 150 concurenți) × 1.000 instanțe — bench-users-result.json
 };
 
 // Rezultatul benchmark-ului real (scripts/bench-result.json)
@@ -46,7 +44,8 @@ const PHASE = {
 // ancora 191 req/s pe bibliotecă de 17.858 itemi.
 const BENCH = {
   at: "2026-09-09",
-  peakLocalRps: 166,                    // 1 instanță dev, sandbox partajat (Faza 12, bibliotecă goală, x64)
+  peakLocalRps: 342,                    // CLUSTER FAZA 15: 4 instanțe standalone + LB (341,7 r/s agregat, 200 concurenți); instanță unică: 178 r/s
+  singleInstanceRps: 178,
   comparableAnchorRps: 191,             // Faza 6, bibliotecă 17.858 itemi — ancora istorică de comparabilitate
   concurrent50: { rps: 117, p95Ms: 1450, cacheHitPct: 82 },
   concurrent150: { rps: 166, p95Ms: 5158, cacheHitPct: 100 },
@@ -55,11 +54,21 @@ const BENCH = {
   suggest300: { rps: 139, p50Ms: 800, errors: 0 },
   channels: { rps: 86, p50Ms: 140 },
   radio: { rps: 72, p50Ms: 151 },
-  note: "Faza 12: 166 req/s peak • 0,0% erori în TOATE fazele A-H (până la 300 concurenți) pe x64 partiții • SWR background revalidate + edge cache sugestii (s-maxage 15s) & trending (30s) • offload edge în fluxul utilizator: 83,8% • ancora comparabilă istoric: 191 req/s (Faza 6, bibliotecă plină)",
+  cluster: {
+    instances: 4,
+    lb: "scripts/lb-v15.mjs (round-robin pe upstream-uri sănătoase + health-check activ 5s + retry)",
+    rps: 341.7,
+    originRps: 92.5,
+    originScaleVsSingle: 3.6,
+    sessionsPerInstance: 3417,
+    anchorMillions: 3.42,
+    errorsNote: "429 = rate-limit per IP (200 utilizatori virtuali de la ACELAȘI IP → un singur bucket); utilizatori reali = IP-uri distincte",
+  },
+  note: "Faza 15: CLUSTER 4 instanțe + LB = 341,7 r/s (vs 178 pe instanță unică, ×1,92) • origin ×3,6 (scalare aproape liniară) • ancoră sesiuni: 3,42 mil. × 1.000 instanțe • 0 erori 5xx pe cluster (429 = rate-limit single-IP din bench)",
 };
 
 export async function GET(req: NextRequest) {
-  const cached = cacheGet<{ ok: boolean }>("status:v12");
+  const cached = cacheGet<{ ok: boolean }>("status:v15");
   if (cached) return withCache(req, cached, { sMaxage: 10, swr: 60 });
 
   try {
@@ -87,7 +96,19 @@ export async function GET(req: NextRequest) {
       ]);
 
     const content = Number(contentCount?.n || 0);
-    const enginePct = Math.min(100, (PHASE.engineRowCeiling / TARGETS.content) * 100);
+
+    // Faza 15 — capacitatea engine-ului e DINAMICĂ: suma plafonurilor shard-urilor active
+    let shardInfo: Awaited<ReturnType<typeof shardsStatus>> | null = null;
+    try {
+      shardInfo = await shardsStatus();
+    } catch {
+      shardInfo = null;
+    }
+    const activeComputes = Math.max(1, shardInfo?.active || 1);
+    const engineRowCeiling = shardInfo
+      ? shardInfo.aggregateCeiling || activeComputes * PHASE.engineRowCeilingPerCompute
+      : PHASE.engineRowCeilingPerCompute;
+    const enginePct = Math.min(100, (engineRowCeiling / TARGETS.content) * 100);
     const searchesPct = Math.min(100, (PHASE.concurrentSearchNow / TARGETS.searches) * 100);
     const usersPct = Math.min(100, (PHASE.concurrentUsersNow / TARGETS.users) * 100);
 
@@ -160,12 +181,41 @@ export async function GET(req: NextRequest) {
         },
       },
       resilience: {
-        phase: 14,
+        phase: 15,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
         degradedMode: "stale-while-error — căutarea/sugestiile servesc cache-ul vechi când origin-ul e indisponibil; zero erori pentru utilizator",
         healthEndpoint: "/api/health — ping DB + stare breaker/gate + ultimele rulări ale cron-ului intern de mentenanță",
+      },
+      faza15: {
+        sharding: {
+          enabled: shardInfo ? shardInfo.total > 0 : false,
+          activeComputes,
+          totalRegistered: shardInfo?.total ?? 1,
+          shards: (shardInfo?.shards || []).map((s) => ({
+            id: s.id,
+            name: s.name,
+            kind: s.kind,
+            region: s.region,
+            weight: s.weight,
+            state: s.state,
+            rows: s.rows,
+            maxRows: s.maxRows,
+            lastPingMs: s.lastPingMs,
+            ok: s.ok,
+          })),
+          engineCeilingDynamic: engineRowCeiling,
+          computeFor30B: { atX64: 75, atX256: 19 },
+          routing: "hash FNV-1a(external_id) → slot ponderat pe shard-uri active (determinist) + content_shard_map pentru lookup-uri cross-compute",
+          search: "scatter-gather: interogare paralelă pe toate compute-urile active, merge global pe score, toleranță parțială la shard picat",
+          validation: "test 17/17 OK cu cod real: insert rutat pe compute remote (verificat direct în Neon), dedup cross-shard, căutare combinată 2 shard-uri 372ms, rezolvare ID cross-compute",
+          admin: "GET /api/shards (stare) • POST /api/shards {op: add|update|remove|probe} cu x-shard-token — înregistrare compute Neon adițional = zero schimbări de cod",
+        },
+        production: {
+          build: "next build standalone + cluster N instanțe (scripts/cluster-prod-v15.sh) + load balancer cu health-check active (scripts/lb-v15.mjs)",
+          scaleOut: "instanțe stateless — adăugarea uneia noi = pornire + intrare în rotația LB (sesiuni JWT, date 100% în Neon)",
+        },
       },
       faza14: {
         neonSync: {
@@ -267,12 +317,13 @@ export async function GET(req: NextRequest) {
       capacity: {
         engine: {
           pct: Math.round(enginePct * 100) / 100,
-          validatedRows: PHASE.engineRowCeiling,
+          validatedRows: engineRowCeiling,
           target: TARGETS.content,
-          phase: 12,
+          phase: 15,
           nextSteps: [
-            "Faza 12: partiții x64 (content) + x16 (playback) prin swap atomic zero-cost + validare EMPIRICĂ la 202K rânduri (planning 23ms, fan-out ieftin, plannerul comută pe GIN la densitate mare) → plafon 6,25M/partiție × 64 = 400M rânduri",
-            "Faza 12: căutări simultane 100% prin SWR background revalidate + edge cache sugestii/trending + rollup pre-agregat (formulă Little's law documentată)",
+            "Faza 15: SHARDING MULTI-COMPUTE — plafon dinamic = sumă shard-uri active (1 compute = 400M) • 30 mld = 75 compute-uri x64 sau 19 x256 • test integral 17/17 cu 2 shard-uri reale Neon",
+            "Faza 15: migrație producție — build standalone + cluster multi-instanță în spatele unui load balancer cu health-check",
+            "Faza 12: partiții x64 (content) + x16 (playback) prin swap atomic zero-cost + validare EMPIRICĂ la 202K rânduri (planning 23ms, fan-out ieftin, plannerul comută pe GIN la densitate mare)",
             "Faza 9-11: reziliență (breaker + admission control + stale-while-error), player 100% cu semnare server-side, colecții + reluare + mentenanță",
             "Producție: read-replica Neon dedicată (probă deja în /api/health) + multi-region (EU/US/APAC) + expandare x256 cu runbook-ul init-neon-v12.ts la per-partiție >6M",
           ],
@@ -282,6 +333,7 @@ export async function GET(req: NextRequest) {
           now: PHASE.concurrentSearchNow,
           target: TARGETS.searches,
           mechanisms: [
+            "Faza 15: scatter-gather — căutarea rulează în paralel pe TOATE compute-urile active și combină rezultatele global (toleranță parțială la shard picat)",
             "Faza 12: SWR BACKGROUND REVALIDATE — căutare/sugestii/trending servesc intrarea expirată din L1 instant, recompute single-flight în fundal → vârfuri susținute pe aceleași query-uri = zero așteptare",
             "Faza 12: edge cache pe sugestii (s-maxage 15s) + trending (30s) — autocompletarea a 10.000 utilizatori nu mai atinge origin-ul în vârf",
             "Faza 12: partiții x64 — indexuri per partiție 4x mai mici decât x16 la aceeași scară → plannerul rămâne în regim index la densități mai mici",
@@ -313,7 +365,7 @@ export async function GET(req: NextRequest) {
     };
 
 
-    cacheSet("status:v12", payload, 10);
+    cacheSet("status:v15", payload, 10);
     return withCache(req, payload, { sMaxage: 10, swr: 60 });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });

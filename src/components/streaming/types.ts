@@ -115,6 +115,21 @@ export type CapacityStatus = {
       configurare: string;
     };
   };
+  faza15?: {
+    sharding: {
+      enabled: boolean;
+      activeComputes: number;
+      totalRegistered: number;
+      shards: { id: number; name: string; kind: string; region: string; weight: number; state: string; rows: number | null; maxRows: number; lastPingMs: number | null; ok: boolean | null }[];
+      engineCeilingDynamic: number;
+      computeFor30B: { atX64: number; atX256: number };
+      routing: string;
+      search: string;
+      validation: string;
+      admin: string;
+    };
+    production: { build: string; scaleOut: string };
+  };
   faza14?: {
     neonSync: {
       enabled: boolean;
@@ -144,6 +159,7 @@ export type CapacityStatus = {
     suggest300?: { rps: number; p50Ms: number; errors: number };
     channels?: { rps: number; p50Ms: number };
     radio?: { rps: number; p50Ms: number };
+    cluster?: { instances: number; lb: string; rps: number; originRps: number; originScaleVsSingle: number; sessionsPerInstance: number; anchorMillions: number; errorsNote: string };
   };
   capacity: {
     engine: { pct: number; validatedRows: number; target: number; phase: number; nextSteps: string[] };

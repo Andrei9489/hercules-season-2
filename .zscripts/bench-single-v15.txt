@@ -1,0 +1,16 @@
+Flux utilizator: 200 concurenți virtuali, 20s…
+
+Rezultat flux 200 concurenți:
+  cereri totale: 4154 • r/s: 178.0 • erori: 27 (0.65%)
+  erori pe tip: {
+  "/api/browse:500": 24,
+  "/api/library:500": 2,
+  "/api/channels:500": 1,
+}
+  P50: 3ms • P95: 8717ms
+  edge-servabil (repetiție în fereastra s-maxage): 85.6%
+  origin r/s: 25.7
+  Utilizatori ACTIVI navigare / instanță: 712 (0,25 req/user/s)
+  Sesiuni simultane / instanță: 1.780 (0,10 req/user/s medie sesiune)
+  Ancoră producție (×1000 instanțe stateless): 1.78 mil. sesiuni
+Salvat: scripts/bench-users-result.json
