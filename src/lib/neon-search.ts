@@ -116,6 +116,18 @@ function cacheGetStale(key: string): LibraryHit[] | null {
   return hit ? hit.data : null;
 }
 
+/** Faza 12: citește intrare expirată (cu touch LRU) — pentru
+ *  STALE-WHILE-REVALIDATE: servim instant din stale, refresh-ul pleacă
+ *  în fundal (single-flight). Sub vârfuri susținute pe aceleași query-uri,
+ *  răspunsul rămâne sub-ms, iar origin-ul e lovit max 1x per TTL. */
+function cacheGetStaleEntry(key: string): LibraryHit[] | null {
+  const hit = searchCache.get(key);
+  if (!hit) return null;
+  searchCache.delete(key);
+  searchCache.set(key, hit);
+  return hit.data;
+}
+
 function cacheSet(key: string, data: LibraryHit[]): void {
   if (searchCache.size >= CACHE_MAX) {
     const oldest = searchCache.keys().next().value;
@@ -124,8 +136,11 @@ function cacheSet(key: string, data: LibraryHit[]): void {
   searchCache.set(key, { exp: Date.now() + RESULT_TTL_MS, data });
 }
 
-/** Invalidare la adăugarea de conținut nou (L1 + L2 distribuit). */
+/** Invalidare la adăugarea de conținut nou (L1 + L2 distribuit).
+ *  Faza 12: ridică generația cache-ului — recompute-urile de background
+ *  pornite ÎNAINTE de invalidare nu mai repopulează date vechi. */
 export function invalidateSearchCache(prefix?: string): void {
+  cacheGeneration++;
   if (!prefix) {
     searchCache.clear();
     inFlight.clear();
@@ -150,10 +165,116 @@ export function invalidateSearchCache(prefix?: string): void {
 // ---------- Căutare FTS + trigram (index-driven, fără seq scan) ----------
 type SearchOpts = { limit?: number; offset?: number; type?: string; brand?: string };
 
+// Faza 12: generația cache-ului — invalidările incrementează; recompute-urile
+// de background captură generația la start și NU mai scrie în cache dacă s-a
+// schimbat între timp (previne repopularea cu date de pre-ingest).
+let cacheGeneration = 0;
+
+/**
+ * Faza 12: re-materializare completă pentru o cheie de căutare
+ * (L2 distribuit → origin SQL → promovare L1 + write-behind L2).
+ * Folosită ATÂT de foreground (cache miss), CÂT ȘI de background
+ * revalidate (intrare expirată servită stale). Nu atinge inFlight —
+ * fiecare apelant își gestionează single-flight-ul.
+ */
+function searchRecompute(
+  cacheKey: string,
+  norm: string,
+  limit: number,
+  offset: number,
+  type?: string,
+  brand?: string
+): Promise<LibraryHit[]> {
+  const gen = cacheGeneration;
+  return (async (): Promise<LibraryHit[]> => {
+    // Faza 4/5: L2 distribuit în Neon (partajat cross-instance)
+    const l2 = await l2Get<LibraryHit[]>(cacheKey);
+    if (l2 && Array.isArray(l2)) {
+      const hits = l2.map((h) => ({ ...h }));
+      cacheSet(cacheKey, hits); // promovează în L1
+      return hits;
+    }
+
+    // to_tsquery cu prefix per termen: "marii pitici" -> marii:* & pitici:*
+    const terms = norm.split(" ").filter(Boolean).slice(0, 8).map((t) => t.replace(/[^\w]/g, ""));
+    const tsq = terms.map((t) => `${t}:*`).join(" & ");
+    const prefix = norm.replace(/[^\w\s]/g, "");
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let p = 0;
+    const next = (v: unknown): string => {
+      params.push(v);
+      p++;
+      return `$${p}`;
+    };
+
+    // FIX 42P18: parametrii se alocă DOAR dacă sunt referențiați în SQL —
+    // pentru prefixuri scurte (<3) pNorm nu era folosit nicăieri și Postgres
+    // respicea statementul ("could not determine data type of parameter $1").
+    const pTsq = next(tsq);
+    const pPrefix = next(prefix + "%");
+    let pSim = "";
+    if (prefix.length >= 3) {
+      pSim = next(norm);
+      conditions.push(`search_text % ${pSim}`);
+    }
+    const pLike = next(`%${prefix}%`);
+    conditions.push(`search_text LIKE ${pLike}`);
+
+    const scoreExpr = `
+    (ts_rank(search_tsv, to_tsquery('simple', ${pTsq})) * 8
+     ${pSim ? `+ similarity(search_text, ${pSim}) * 3` : ""}
+     + CASE WHEN search_text LIKE ${pPrefix} THEN 3 ELSE 0 END
+     + LEAST(popularity, 5000) / 5000.0 * 1.2)`;
+
+    let where = `(${conditions.join(" OR ")})`;
+    if (type) where += ` AND content_type = ${next(type)}`;
+    if (brand) where += ` AND brand = ${next(brand)}`;
+
+    const sql = `
+    SELECT id, external_id, title, original_title, description, content_type, brand,
+           category, continent, country, provider, source_type, source_url, embed_code,
+           thumbnail, backdrop, year, rating, popularity, views, ${scoreExpr} AS score
+    FROM content
+    WHERE ${where}
+    ORDER BY score DESC, popularity DESC, id DESC
+    LIMIT ${next(limit)} OFFSET ${next(offset)}`;
+
+    const rows = await qRead<Record<string, unknown>>(sql, params);
+    const hits = rows.map(mapHit);
+    // Faza 12: scriem în cache DOAR dacă între timp nu a venit o invalidare
+    if (gen === cacheGeneration) {
+      cacheSet(cacheKey, hits);
+      void l2Set(cacheKey, hits).then(() => l2CleanupMaybe()); // L2 write-behind
+    }
+    return hits;
+  })();
+}
+
+/** Faza 12: kick asincron de revalidare (single-flight prin inFlight). */
+function kickSearchRevalidate(
+  cacheKey: string,
+  norm: string,
+  limit: number,
+  offset: number,
+  type?: string,
+  brand?: string
+): void {
+  if (inFlight.has(cacheKey)) return;
+  const p = searchRecompute(cacheKey, norm, limit, offset, type, brand).catch(
+    () => { /* stale-ul rămâne servit; circuit breaker/timeout gestionate de pg.ts */ }
+  );
+  inFlight.set(cacheKey, p);
+  void p.finally(() => {
+    if (inFlight.get(cacheKey) === p) inFlight.delete(cacheKey);
+  });
+}
+
 export async function searchLibrary(
   query: string,
   opts: SearchOpts = {}
-): Promise<{ hits: LibraryHit[]; tookMs: number; cached: boolean; totalIndexed: number; degraded?: boolean }> {
+): Promise<{ hits: LibraryHit[]; tookMs: number; cached: boolean; totalIndexed: number; degraded?: boolean; revalidating?: boolean }> {
   const t0 = Date.now();
   const { limit = 24, offset = 0, type, brand } = opts;
   const norm = normalizeRo(query).slice(0, 120);
@@ -183,12 +304,12 @@ export async function searchLibrary(
   const cached = cacheGet(cacheKey);
   if (cached) return { hits: cached, tookMs: Date.now() - t0, cached: true, totalIndexed: 0 };
 
-  // Faza 4/5: L2 distribuit în Neon (partajat cross-instance)
-  const l2 = await l2Get<LibraryHit[]>(cacheKey);
-  if (l2 && Array.isArray(l2)) {
-    const hits = l2.map((h) => ({ ...h }));
-    cacheSet(cacheKey, hits); // promovează în L1 pentru cererile următoare
-    return { hits, tookMs: Date.now() - t0, cached: true, totalIndexed: 0 };
+  // Faza 12: STALE-WHILE-REVALIDATE — intrare expirată în L1 → servim
+  // INSTANT din stale + re-materializare asincronă single-flight în fundal.
+  const staleEntry = cacheGetStaleEntry(cacheKey);
+  if (staleEntry) {
+    kickSearchRevalidate(cacheKey, norm, limit, offset, type, brand);
+    return { hits: staleEntry, tookMs: Date.now() - t0, cached: true, totalIndexed: 0, revalidating: true };
   }
 
   // coalescing: dacă o cerere identică e deja în zbor, așteptăm-o
@@ -198,60 +319,7 @@ export async function searchLibrary(
     return { hits, tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
   }
 
-  const exec = (async (): Promise<LibraryHit[]> => {
-
-  // to_tsquery cu prefix per termen: "marii pitici" -> marii:* & pitici:*
-  const terms = norm.split(" ").filter(Boolean).slice(0, 8).map((t) => t.replace(/[^\w]/g, ""));
-  const tsq = terms.map((t) => `${t}:*`).join(" & ");
-  const prefix = norm.replace(/[^\w\s]/g, "");
-
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  let p = 0;
-  const next = (v: unknown): string => {
-    params.push(v);
-    p++;
-    return `$${p}`;
-  };
-
-  // FIX 42P18: parametrii se alocă DOAR dacă sunt referențiați în SQL —
-  // pentru prefixuri scurte (<3) pNorm nu era folosit nicăieri și Postgres
-  // respice statementul ("could not determine data type of parameter $1").
-  const pTsq = next(tsq);
-  const pPrefix = next(prefix + "%");
-  let pSim = "";
-  if (prefix.length >= 3) {
-    pSim = next(norm);
-    conditions.push(`search_text % ${pSim}`);
-  }
-  const pLike = next(`%${prefix}%`);
-  conditions.push(`search_text LIKE ${pLike}`);
-
-  const scoreExpr = `
-    (ts_rank(search_tsv, to_tsquery('simple', ${pTsq})) * 8
-     ${pSim ? `+ similarity(search_text, ${pSim}) * 3` : ""}
-     + CASE WHEN search_text LIKE ${pPrefix} THEN 3 ELSE 0 END
-     + LEAST(popularity, 5000) / 5000.0 * 1.2)`;
-
-  let where = `(${conditions.join(" OR ")})`;
-  if (type) where += ` AND content_type = ${next(type)}`;
-  if (brand) where += ` AND brand = ${next(brand)}`;
-
-  const sql = `
-    SELECT id, external_id, title, original_title, description, content_type, brand,
-           category, continent, country, provider, source_type, source_url, embed_code,
-           thumbnail, backdrop, year, rating, popularity, views, ${scoreExpr} AS score
-    FROM content
-    WHERE ${where}
-    ORDER BY score DESC, popularity DESC, id DESC
-    LIMIT ${next(limit)} OFFSET ${next(offset)}`;
-
-  const rows = await qRead<Record<string, unknown>>(sql, params);
-  const hits = rows.map(mapHit);
-  cacheSet(cacheKey, hits);
-  void l2Set(cacheKey, hits).then(() => l2CleanupMaybe()); // L2 write-behind
-  return hits;
-  })();
+  const exec = searchRecompute(cacheKey, norm, limit, offset, type, brand);
 
   inFlight.set(cacheKey, exec);
   try {
@@ -330,6 +398,16 @@ function sugGetStale<T>(key: string): T | null {
   return hit ? (hit.data as T) : null;
 }
 
+/** Faza 12: intrare expirată cu touch LRU — pentru STALE-WHILE-REVALIDATE
+ *  (autocompletarea servește sub-ms mereu; refresh-ul pleacă în fundal). */
+function sugGetStaleEntry<T>(key: string): T | null {
+  const hit = sugCache.get(key);
+  if (!hit) return null;
+  sugCache.delete(key);
+  sugCache.set(key, hit);
+  return hit.data as T;
+}
+
 function sugSet(key: string, data: unknown): void {
   if (sugCache.size >= SUG_MAX) {
     const oldest = sugCache.keys().next().value;
@@ -338,23 +416,24 @@ function sugSet(key: string, data: unknown): void {
   sugCache.set(key, { exp: Date.now() + SUG_TTL_MS, data });
 }
 
-export async function suggest(prefix: string, limit = 7): Promise<string[]> {
-  const norm = normalizeRo(prefix);
-  if (!norm) return [];
-  const key = `sug:${norm}:${limit}`;
-  const cached = sugGet<string[]>(key);
-  if (cached) return cached;
-
-  // coalescing: cereri simultane identice partajează aceeași promisiune
-  const pending = sugInFlight.get(key);
-  if (pending) return pending as Promise<string[]>;
-
-  const exec = (async () => {
+/**
+ * Faza 12: re-materializare sugestii pentru o cheie (L2 → rollup/index-only
+ * → L1 + L2). Folosită de foreground (miss) și background (stale revalidate).
+ * Scrierile în cache respectă generația (invalidările le anulează).
+ */
+function sugRecompute(key: string, norm: string, limit: number): Promise<unknown> {
+  const gen = cacheGeneration;
+  const write = (titles: string[]): void => {
+    if (gen !== cacheGeneration) return;
+    sugSet(key, titles);
+    void l2Set(key, titles);
+  };
+  return (async () => {
     // Faza 5: L2 distribuit — hit-rate crescut cross-instance la prefixe
     // repetitive de autocompletare (acoperă ~95% din traficul sub vârf)
     const l2 = await l2Get<string[]>(key, L2_TTL_SUG_SEC);
     if (l2 && Array.isArray(l2)) {
-      sugSet(key, l2);
+      if (gen === cacheGeneration) sugSet(key, l2);
       return l2;
     }
 
@@ -374,8 +453,7 @@ export async function suggest(prefix: string, limit = 7): Promise<string[]> {
         // refresh-ul bucketului pleacă asincron (nu blochează cererea)
         if (row.stale) void refreshSuggestBucket(bucketKey);
         const titles = row.titles.slice(0, limit);
-        sugSet(key, titles);
-        void l2Set(key, titles);
+        write(titles);
         return titles;
       }
       // bucket lipsă (prefix nou-făcut / prima cerere): calcul țintit pe
@@ -383,19 +461,18 @@ export async function suggest(prefix: string, limit = 7): Promise<string[]> {
       const fresh = await refreshSuggestBucket(bucketKey);
       if (fresh.length > 0) {
         const titles = fresh.slice(0, limit);
-        sugSet(key, titles);
-        void l2Set(key, titles);
+        write(titles);
         return titles;
       }
       // zero potriviri — caching negativ scurt ca să nu batem la fiecare tastă
-      sugSet(key, []);
+      if (gen === cacheGeneration) sugSet(key, []);
       return [];
     }
 
     // ===== Prefixe lungi (≥4): index-only scan, ranking alfabetic cu
     // EARLY TERMINATION pe Merge Append (≤limit rânduri per partiție).
     // La ≥4 caractere problema popularității e mai puțin relevantă (util.
-    // a deja scris aproape tot cuvântul), iar agregarea completă pe 16
+    // a deja scris aproape tot cuvântul), iar agregarea completă pe 64
     // partiții rămâne prohibitivă la miliarde de rânduri — rollup-ul pe
     // bucket-e acoperă deja primul moment de decizie (primele 3 taste).=====
     const rows = await qRead<{ title: string }>(
@@ -405,10 +482,76 @@ export async function suggest(prefix: string, limit = 7): Promise<string[]> {
       [norm, limit]
     );
     const titles = rows.map((r) => r.title);
-    sugSet(key, titles);
-    void l2Set(key, titles); // L2 write-behind
+    write(titles);
     return titles;
   })();
+}
+
+/** Faza 12: kick asincron de revalidare sugestii (single-flight prin sugInFlight). */
+function kickSugRevalidate(key: string, norm: string, limit: number): void {
+  if (sugInFlight.has(key)) return;
+  const p = sugRecompute(key, norm, limit).catch(() => { /* stale rămâne servit */ });
+  sugInFlight.set(key, p);
+  void p.finally(() => {
+    if (sugInFlight.get(key) === p) sugInFlight.delete(key);
+  });
+}
+
+/**
+ * Faza 12: re-materializare trending (L2 → search_stats → L1 + L2).
+ */
+function trendRecompute(key: string, limit: number): Promise<TrendItem[]> {
+  const gen = cacheGeneration;
+  return (async (): Promise<TrendItem[]> => {
+    // Faza 5: și trendingul primește L2 distribuit (TTL 120s)
+    const l2 = await l2Get<TrendItem[]>(key, L2_TTL_TREND_SEC);
+    if (l2 && Array.isArray(l2)) {
+      if (gen === cacheGeneration) sugSet(key, l2);
+      return l2;
+    }
+    const rows = await qRead<Record<string, unknown>>(
+      `SELECT norm, original, hits FROM search_stats ORDER BY hits DESC, last_at DESC LIMIT $1`,
+      [limit]
+    );
+    const items = rows.map((r) => ({ norm: String(r.norm), original: String(r.original), hits: Number(r.hits) }));
+    if (gen === cacheGeneration) {
+      sugSet(key, items);
+      void l2Set(key, items);
+    }
+    return items;
+  })();
+}
+
+/** Faza 12: kick asincron de revalidare trending (single-flight). */
+function kickTrendRevalidate(key: string, limit: number): void {
+  if (sugInFlight.has(key)) return;
+  const p = trendRecompute(key, limit).catch(() => { /* stale rămâne servit */ });
+  sugInFlight.set(key, p);
+  void p.finally(() => {
+    if (sugInFlight.get(key) === p) sugInFlight.delete(key);
+  });
+}
+
+export async function suggest(prefix: string, limit = 7): Promise<string[]> {
+  const norm = normalizeRo(prefix);
+  if (!norm) return [];
+  const key = `sug:${norm}:${limit}`;
+  const cached = sugGet<string[]>(key);
+  if (cached) return cached;
+
+  // Faza 12: STALE-WHILE-REVALIDATE — servim instant din stale,
+  // re-materializarea pleacă asincron single-flight în fundal.
+  const staleEntry = sugGetStaleEntry<string[]>(key);
+  if (staleEntry) {
+    kickSugRevalidate(key, norm, limit);
+    return staleEntry;
+  }
+
+  // coalescing: cereri simultane identice partajează aceeași promisiune
+  const pending = sugInFlight.get(key);
+  if (pending) return pending as Promise<string[]>;
+
+  const exec = sugRecompute(key, norm, limit);
 
   sugInFlight.set(key, exec);
   try {
@@ -463,21 +606,15 @@ export async function trending(limit = 8): Promise<TrendItem[]> {
   const key = `trend:${limit}`;
   const cached = sugGet<TrendItem[]>(key);
   if (cached) return cached;
-  try {
-  // Faza 5: și trendingul primește L2 distribuit (TTL 120s)
-  const l2 = await l2Get<TrendItem[]>(key, L2_TTL_TREND_SEC);
-  if (l2 && Array.isArray(l2)) {
-    sugSet(key, l2);
-    return l2;
+  // Faza 12: STALE-WHILE-REVALIDATE pe trending
+  const staleEntry = sugGetStaleEntry<TrendItem[]>(key);
+  if (staleEntry) {
+    kickTrendRevalidate(key, limit);
+    return staleEntry;
   }
-  const rows = await qRead<Record<string, unknown>>(
-    `SELECT norm, original, hits FROM search_stats ORDER BY hits DESC, last_at DESC LIMIT $1`,
-    [limit]
-  );
-  const items = rows.map((r) => ({ norm: String(r.norm), original: String(r.original), hits: Number(r.hits) }));
-  sugSet(key, items);
-  void l2Set(key, items);
-  return items;
+  try {
+    const items = await trendRecompute(key, limit);
+    return items;
   } catch (e) {
     // Faza 9: trending NU crapă niciodată — stale sau gol
     const stale = sugGetStale<TrendItem[]>(key);

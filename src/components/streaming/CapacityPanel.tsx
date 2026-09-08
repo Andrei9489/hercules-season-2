@@ -180,6 +180,22 @@ export function CapacityPanel() {
                   ⬆️ Import tău: {st.userDriven.import.platforms.slice(0, 8).join(", ")}... + playlist M3U/IPTV {st.userDriven.import.m3u.enabled ? `ACTIV (max ${st.userDriven.import.m3u.maxPerImport.toLocaleString("ro-RO")} canale/import, idempotent)` : ""}
                 </p>
               )}
+              {st.faza12 && (
+                <>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🧩 Partiții x{st.faza12.partitions.content} (content) + x{st.faza12.partitions.playback} (playback) — {st.faza12.partitions.expansion}
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    📐 Validare empirică: {st.faza12.empirical.rowsLoaded.toLocaleString("ro-RO")} rânduri × {st.faza12.partitions.content} partiții — planning {st.faza12.empirical.planningMs}ms • suggest P50 {st.faza12.empirical.suggestP50Ms}ms • plafon {st.faza12.empirical.perPartitionCeiling.toLocaleString("ro-RO")}/partiție × 64 = 400M rânduri (1,33% din 30 mld)
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🚀 SWR background revalidate (căutare + sugestii + trending): intrare expirată servită instant, recompute single-flight în fundal • edge cache NOU pe sugestii/trending → offload edge {st.faza12.swr.edgeOffloadPct}% (de la 47,2%) — presiune origin per sesiune −84%
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🔀 {st.faza12.replicaProbe}
+                  </p>
+                </>
+              )}
               {st.faza11 && (
                 <>
                   <p className="mt-1 truncate text-[10px] text-zinc-600">

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 import { searchLibrary, suggest, trending, logSearch } from "@/lib/neon-search";
 import { rateLimit, rateLimitTiered, clientIp, tooMany } from "@/lib/rate-limit";
+import { withCache } from "@/lib/http-cache";
 
 const TMDB_KEY = process.env.TMDB_API_KEY || "3dd880e229e7b83d8e63c4b6f08f77a4";
 
@@ -65,23 +66,41 @@ export async function GET(req: NextRequest) {
   if (!rl.ok) return tooMany(rl);
 
   // ---- mode=suggest: autocompletare (titluri Neon + trending)
+  // Faza 12: EDGE CACHE + ETag pe sugestii — prefixele se repetă masiv
+  // la autocompletare (10.000 utilizatori tastează aceleași prefixe) →
+  // în producție CDN-ul le servește FĂRĂ să atingă origin-ul.
   if (mode === "suggest") {
     if (!q) {
       const t = await trending(8).catch(() => []);
-      return NextResponse.json({ suggestions: t.map((t) => t.original), trending: t.map((t) => t.original) });
+      return withCache(
+        req,
+        { suggestions: t.map((t) => t.original), trending: t.map((t) => t.original) },
+        { sMaxage: 15, swr: 60 },
+        { "X-RateLimit-Remaining": String(rl.remaining) }
+      );
     }
     const [sug, tr] = await Promise.all([
       suggest(q, 7).catch(() => [] as string[]),
       trending(3).catch(() => []),
     ]);
     const merged = [...new Set([...sug, ...tr.map((t) => t.original).filter((o) => o.toLowerCase().includes(q.toLowerCase()))])].slice(0, 8);
-    return NextResponse.json({ suggestions: merged });
+    return withCache(
+      req,
+      { suggestions: merged },
+      { sMaxage: 15, swr: 60 },
+      { "X-RateLimit-Remaining": String(rl.remaining) }
+    );
   }
 
-  // ---- mode=trending: top căutări
+  // ---- mode=trending: top căutări (Faza 12: edge cache 30s + SWR)
   if (mode === "trending") {
     const t = await trending(10).catch(() => []);
-    return NextResponse.json({ trending: t });
+    return withCache(
+      req,
+      { trending: t },
+      { sMaxage: 30, swr: 120 },
+      { "X-RateLimit-Remaining": String(rl.remaining) }
+    );
   }
 
   if (!q) return NextResponse.json({ results: [], sources: [], libraryCount: 0 });

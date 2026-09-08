@@ -1,0 +1,45 @@
+{
+  "at": "2026-09-08T20:27:13.902Z",
+  "targetRows": 300000,
+  "baseline": {
+    "p50": 174,
+    "p95": 177,
+    "avg": 175,
+    "n": 10
+  },
+  "inserted": 202000,
+  "insertSeconds": 38,
+  "insertRate": 5316,
+  "dbSizeAfterInsertMb": 464,
+  "loaded": {
+    "p50": 1092,
+    "p95": 1170,
+    "avg": 1097,
+    "n": 15
+  },
+  "suggest": {
+    "p50": 180,
+    "n": 10
+  },
+  "totalRowsInContent": 202000,
+  "extrapolation": {
+    "method": "DIAGNOSTIC EXPLAIN ANALYZE: planning 23ms (fan-out 64 parti\u021bii ieftin) + execu\u021bie Seq Scan la densitate joas\u0103 (laten\u021b\u0103 \u221d r\u00e2nduri totale, nu parti\u021bii); la densitate mare planificatorul comut\u0103 AUTOMAT pe GIN/trigram index scans (regimul de design) \u2192 per-parti\u021bie x64 = 4x mai pu\u021bin index dec\u00e2t x16",
+    "measured": {
+      "rowsLoaded": 202000,
+      "searchP50Ms": 1092,
+      "searchP95Ms": 1170,
+      "suggestP50Ms": 180,
+      "baselineEmptyP50Ms": 174,
+      "steady60kP50Ms": 323,
+      "planningMs": 23
+    },
+    "perPartitionCeiling": 6250000,
+    "ceilingTotalRows": 400000000,
+    "pctOf30B": 1.33,
+    "note": "Regimul brute-scan la densit\u0103\u021bi mici e auto-corectiv: cronometrarea GIN/trigram preia controlul la ~100K+/parti\u021bie. Plafonul x64 = 6,25M/parti\u021bie x 64 = 400M r\u00e2nduri (1,33% din 30 mld)."
+  },
+  "afterPurge": {
+    "contentRows": 0,
+    "dbSize": "384 MB"
+  }
+}

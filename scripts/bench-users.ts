@@ -35,8 +35,8 @@ function nextJob(): Job {
     const sort = Math.random() < 0.8 ? "popularity" : pick(["newest_added", "views", "rating"]);
     return { path: `/api/browse?page=${p}&size=20${t ? `&type=${t}` : ""}&sort=${sort}`, edgeTtl: 30 };
   }
-  if (r < 0.6) return { path: `/api/search?mode=library&q=${encodeURIComponent(pick(QUERIES) + pick(["", "a", "o"]))}&limit=24`, edgeTtl: 0 };
-  if (r < 0.8) return { path: `/api/search?mode=suggest&q=${encodeURIComponent(pick(SUGGESTS))}`, edgeTtl: 0 };
+  if (r < 0.6) return { path: `/api/search?mode=library&q=${encodeURIComponent(pick(QUERIES) + pick(["", "a", "o"]))}&limit=24`, edgeTtl: 30 }; // Faza 12: header real s-maxage=30
+  if (r < 0.8) return { path: `/api/search?mode=suggest&q=${encodeURIComponent(pick(SUGGESTS))}`, edgeTtl: 15 }; // Faza 12: edge cache NOU pe suggest (s-maxage 15)
   if (r < 0.9) return { path: `/api/channels?type=${pick(["live_tv", "radio"])}&limit=24&offset=0`, edgeTtl: 20 };
   if (r < 0.95) return { path: `/api/library?limit=18&offset=0`, edgeTtl: 15 };
   return { path: `/api/status`, edgeTtl: 10 };

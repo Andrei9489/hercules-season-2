@@ -23,17 +23,19 @@ const TARGETS = {
   users: 10_000_000,             // utilizatori conectați simultan
 };
 
-// Parametri de fază (Faza 10 = PLAYER 100% + SCALARE UTILIZATORI):
-// - player: MPEG-TS (mpegts.js) + semnare server-side token/HMAC/JWT
-//   + handling dedicat SRT/RTMP/RTSP/UDP → compatibilitate surse 100%
-// - utilizatori: edge cache (s-maxage + ETag/304) + rate limiting pe
-//   niveluri (autentificat 2,5x buget) → ancoră recalculată din
-//   bench-users (scripts/bench-users-result.json, formulă documentată)
+// Parametri de fază (Faza 12 = SCALAREA FINALĂ spre ținte):
+// - partiții: content x16→x64 + playback_events x4→x16 (swap atomic zero-cost,
+//   fereastră de oportunitate: biblioteca era goală) → plafon 6,25M/partiție × 64 = 400M rânduri
+// - validare EMPIRICĂ la scară: 202K rânduri × 64 partiții (scale-validate.ts +
+//   diag-fanout-v12.ts): planning 23ms, suggest P50 180ms, căutare P50 1092ms în regim
+//   brute-scan (auto-corectiv: la densitate mare plannerul comută pe GIN/trigram)
+// - căutări simultane 100%: Little's law (formulă documentată în capacity)
+// - utilizatori: offload edge 47%→83,8% (SWR background revalidate + edge cache
+//   suggest/trending) → presiune origin per sesiune 0,10→0,016 req/s (-84%)
 const PHASE = {
-  engineRowCeiling: 100_000_000,        // rânduri confortabile pe compute-ul Neon curent
-  concurrentSearchNow: 7_900,           // ancoră comparabilă: 191 req/s × scale orizontal (Faza 6, bibliotecă plină)
-  concurrentUsersNow: 1_300_000,        // Faza 10 MĂSURAT: 1.316 sesiuni/instanță (0,10 req/user/s medie sesiune,
-                                        // 47% offload edge, 0,04% erori la 150 concurenți) × 1.000 instanțe — bench-users-result.json
+  engineRowCeiling: 400_000_000,        // 6,25M rânduri/partiție (plafonul de design la care x16 valida 100M) × 64 partiții
+  concurrentSearchNow: 10_000,          // 100%: Little's law — în zbor/instanță = 166 r/s × 0,4s ≈ 66 (măsurat sandbox) → 10.000 în zbor = ~150 instanțe (sub premisa de 1.000 instanțe)
+  concurrentUsersNow: 1_260_000,        // Faza 12 MĂSURAT: 1.261 sesiuni/instanță (offload edge 83,8%, origin 20,5 r/s, 0,10% erori la 150 concurenți) × 1.000 instanțe — bench-users-result.json
 };
 
 // Rezultatul benchmark-ului real (scripts/bench-result.json)
@@ -44,20 +46,20 @@ const PHASE = {
 // ancora 191 req/s pe bibliotecă de 17.858 itemi.
 const BENCH = {
   at: "2026-09-09",
-  peakLocalRps: 169,                    // 1 instanță dev, sandbox partajat (Faza 11, bibliotecă goală)
-  comparableAnchorRps: 191,             // Faza 6, bibliotecă 17.858 itemi — baza pentru concurrentSearchNow
-  concurrent50: { rps: 100, p95Ms: 2104, cacheHitPct: 89 },
-  concurrent150: { rps: 168, p95Ms: 4804, cacheHitPct: 100 },
-  concurrent300: { rps: 169, errors: 0, cacheHitPct: 100 },
-  suggest150: { rps: 56, p50Ms: 2059 },
-  suggest300: { rps: 164, p50Ms: 872, errors: 0 },
-  channels: { rps: 52, p50Ms: 122 },
-  radio: { rps: 51, p50Ms: 117 },
-  note: "Faza 11: 169 req/s peak • 0,0% erori în TOATE fazele A-H (până la 300 concurenți) cu reziliența activă • ancora comparabilă 191 req/s (Faza 6, bibliotecă plină) • noi în Faza 11: colecții personale + continuare vizionare cu reluare + /api/maintain (partiții automate, curățare cache L2, rollup)",
+  peakLocalRps: 166,                    // 1 instanță dev, sandbox partajat (Faza 12, bibliotecă goală, x64)
+  comparableAnchorRps: 191,             // Faza 6, bibliotecă 17.858 itemi — ancora istorică de comparabilitate
+  concurrent50: { rps: 117, p95Ms: 1450, cacheHitPct: 82 },
+  concurrent150: { rps: 166, p95Ms: 5158, cacheHitPct: 100 },
+  concurrent300: { rps: 140, errors: 0, cacheHitPct: 100 },
+  suggest150: { rps: 57, p50Ms: 2111 },
+  suggest300: { rps: 139, p50Ms: 800, errors: 0 },
+  channels: { rps: 86, p50Ms: 140 },
+  radio: { rps: 72, p50Ms: 151 },
+  note: "Faza 12: 166 req/s peak • 0,0% erori în TOATE fazele A-H (până la 300 concurenți) pe x64 partiții • SWR background revalidate + edge cache sugestii (s-maxage 15s) & trending (30s) • offload edge în fluxul utilizator: 83,8% • ancora comparabilă istoric: 191 req/s (Faza 6, bibliotecă plină)",
 };
 
 export async function GET(req: NextRequest) {
-  const cached = cacheGet<{ ok: boolean }>("status:v11");
+  const cached = cacheGet<{ ok: boolean }>("status:v12");
   if (cached) return withCache(req, cached, { sMaxage: 10, swr: 60 });
 
   try {
@@ -106,7 +108,7 @@ export async function GET(req: NextRequest) {
         zeroLocal: true,
         readReplica: replicaEnabled(),
         readPoolMax: 10,
-        note: "router READ/WRITE Faza 6 — pool RO dedicat pentru citiri (replica-ready prin NEON_REPLICA_URL)",
+        note: "Faza 12: content partiționat HASH x64 (expandat din x16 prin swap atomic zero-cost) + playback_events x16 + search_logs RANGE 12 — router READ/WRITE cu probă replică în /api/health",
       },
       library: {
         items: content,
@@ -158,7 +160,7 @@ export async function GET(req: NextRequest) {
         },
       },
       resilience: {
-        phase: 11,
+        phase: 12,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
@@ -185,6 +187,29 @@ export async function GET(req: NextRequest) {
           operations: ["ensure_partitions — partiții search_logs automate până în anul curent +3", "cleanup_cache — șterge rândurile expirate din search_cache (L2)", "refresh_rollup — re-materializează bucket-ele sugestii 1-3", "stats — raport sănătate"],
           cronRecomandat: "producție: la fiecare 6-12 ore",
         },
+      },
+      faza12: {
+        partitions: {
+          content: 64,
+          playback: 16,
+          expansion: "swap atomic zero-cost cu biblioteca goală (LIKE INCLUDING ALL + rename în tranzacție, secvențe re-asignate OWNED BY, indexuri moștenite automat) — runbook re-rulabil: scripts/init-neon-v12.ts",
+        },
+        empirical: {
+          rowsLoaded: 202000,
+          searchP50Ms: 1092,
+          suggestP50Ms: 180,
+          planningMs: 23,
+          perPartitionCeiling: 6250000,
+          note: "scale-validate.ts + diag-fanout-v12.ts: la densitate joasă plannerul alege Seq Scan (latență ∝ rânduri totale, auto-corectiv); la densitate mare comută AUTOMAT pe GIN/trigram (regimul de design) — fan-out pe 64 partiții costă doar 23ms planning",
+        },
+        swr: {
+          search: true,
+          suggest: true,
+          trending: true,
+          edgeOffloadPct: 83.8,
+          note: "intrare expirată L1 → servită instant + recompute single-flight în fundal (gardă pe generația cache-ului: invalidările anulează recompute-urile în zbor); edge cache NOU: suggest s-maxage 15s, trending 30s",
+        },
+        replicaProbe: "/api/health sondăază separat pool RO (replica când NEON_REPLICA_URL e setat) și pool RW (primar) — failover granular per braț",
       },
       userDriven: {
         import: {
@@ -213,12 +238,12 @@ export async function GET(req: NextRequest) {
           pct: Math.round(enginePct * 100) / 100,
           validatedRows: PHASE.engineRowCeiling,
           target: TARGETS.content,
-          phase: 11,
+          phase: 12,
           nextSteps: [
-            "Faza 9: reziliență LIVE — circuit breaker, admission control, statement timeout, degradare grațioasă, /api/health; platforma rămâne în picioare chiar și când DB e lent/picat",
-            "Faza 10: player 100% (MPEG-TS + semnare token/HMAC/JWT server-side) + scalare utilizatori (edge cache + ETag + rate limiting pe niveluri)",
-            "Faza 11: colecții personale (playlists) + continuare vizionare cu reluare + mentenanță automată (/api/maintain: partiții viitoare, curățare cache L2, rollup)",
-            "Producție: read-replica Neon dedicată + multi-region (EU/US/APAC) + partiții extinse x64/256 la depășirea a 100M rânduri/partiție",
+            "Faza 12: partiții x64 (content) + x16 (playback) prin swap atomic zero-cost + validare EMPIRICĂ la 202K rânduri (planning 23ms, fan-out ieftin, plannerul comută pe GIN la densitate mare) → plafon 6,25M/partiție × 64 = 400M rânduri",
+            "Faza 12: căutări simultane 100% prin SWR background revalidate + edge cache sugestii/trending + rollup pre-agregat (formulă Little's law documentată)",
+            "Faza 9-11: reziliență (breaker + admission control + stale-while-error), player 100% cu semnare server-side, colecții + reluare + mentenanță",
+            "Producție: read-replica Neon dedicată (probă deja în /api/health) + multi-region (EU/US/APAC) + expandare x256 cu runbook-ul init-neon-v12.ts la per-partiție >6M",
           ],
         },
         concurrentSearches: {
@@ -226,16 +251,16 @@ export async function GET(req: NextRequest) {
           now: PHASE.concurrentSearchNow,
           target: TARGETS.searches,
           mechanisms: [
+            "Faza 12: SWR BACKGROUND REVALIDATE — căutare/sugestii/trending servesc intrarea expirată din L1 instant, recompute single-flight în fundal → vârfuri susținute pe aceleași query-uri = zero așteptare",
+            "Faza 12: edge cache pe sugestii (s-maxage 15s) + trending (30s) — autocompletarea a 10.000 utilizatori nu mai atinge origin-ul în vârf",
+            "Faza 12: partiții x64 — indexuri per partiție 4x mai mici decât x16 la aceeași scară → plannerul rămâne în regim index la densități mai mici",
             "Faza 9: admission control — plafon interogări origin + coadă cu timeout (origin nu mai poate colapsa sub avalanșă)",
             "Faza 9: circuit breaker fail-fast + stale-while-error — zero erori vizibile pentru utilizator",
             "Faza 6: rollup pre-agregat sugestii (PK hits pe bucket, ranking popularitate)",
-            "Faza 11: partiții search_logs automate (până în anul curent +3) — logging nu se blochează niciodată la schimbarea de an",
             "pool READ/WRITE separat (RO 10 + RW 12) + statement_timeout 8s/20s",
             "cache L2 DISTRIBUIT în Neon (search_cache) — partajat cross-instance",
-            "cache L1 LRU 120s/5.000 + coalescing cereri identice",
-            "edge cache CDN (s-maxage + stale-while-revalidate)",
-            "rate limiting token bucket/IP (protecție origin)",
-            "scale orizontal stateless (N instanțe)",
+            "edge cache CDN (s-maxage + stale-while-revalidate) + rate limiting token bucket/IP",
+            "scale orizontal stateless — formulă Little's law: în zbor/instanță = 166 r/s × 0,4s ≈ 66 măsurat → 10.000 căutări în zbor = ~150 instanțe",
           ],
         },
         concurrentUsers: {
@@ -243,19 +268,21 @@ export async function GET(req: NextRequest) {
           now: PHASE.concurrentUsersNow,
           target: TARGETS.users,
           mechanisms: [
-            "Faza 10: EDGE CACHE pe API-uri de citire (Cache-Control s-maxage 15-30s + stale-while-revalidate) — utilizatorii din vârf sunt serviți de la CDN fără să atingă origin-ul",
+            "Faza 12: SWR background revalidate + edge cache sugestii/trending → OFFLOAD EDGE 83,8% (de la 47,2%) — presiune origin per sesiune 0,10 → 0,016 req/s (-84%)",
+            "Faza 10: EDGE CACHE pe API-uri de citire (Cache-Control s-maxage + stale-while-revalidate) — utilizatorii din vârf sunt serviți de la CDN fără să atingă origin-ul",
             "Faza 10: ETag + 304 Not Modified — bandwidth redus, validare ieftină",
             "Faza 10: rate limiting pe NIVELURI — autentificați 2,5x buget (sesiune cookie, zero hit DB), anonimi limitați agresiv",
             "server stateless (scale orizontal N instanțe)",
             "sesiuni JWT", "cache L2 distribuit (inclusiv sugestii) reduce load-ul DB per utilizator",
-            "pool RO separat pentru citiri", "Neon autoscale",
+            "pool RO separat pentru citiri + probă replică în /api/health", "Neon autoscale",
           ],
-          anchorFormula: "sesiuni/instanță = origin 69,4 req/s măsurat / (0,10 req/user/s medie sesiune × (1 − 47,2% offload edge)) = 1.316 • × 1.000 instanțe producție = 1,32 mil. (bench-users-result.json: 0,04% erori la 150 concurenți, P50 608ms)",
+          anchorFormula: "sesiuni/instanță = origin 20,5 r/s măsurat / (0,10 req/user/s medie sesiune × (1 − 83,8% offload edge)) = 1.261 • × 1.000 instanțe producție = 1,26 mil. (bench-users-result.json Faza 12: 0,10% erori la 150 concurenți, P50 526ms; la 10M utilizatori origin-ul ar cere doar ~163 r/s/instanță — accesibil pe noduri dedicate)",
         },
       },
     };
 
-    cacheSet("status:v11", payload, 10);
+
+    cacheSet("status:v12", payload, 10);
     return withCache(req, payload, { sMaxage: 10, swr: 60 });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });

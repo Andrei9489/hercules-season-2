@@ -89,6 +89,12 @@ export type CapacityStatus = {
     continueWatching: { enabled: boolean; resumeFrom: string; engines: string[]; progressSave: string };
     maintenance: { endpoint: string; operations: string[]; cronRecomandat: string };
   };
+  faza12?: {
+    partitions: { content: number; playback: number; expansion: string };
+    empirical: { rowsLoaded: number; searchP50Ms: number; suggestP50Ms: number; planningMs: number; perPartitionCeiling: number; note: string };
+    swr: { search: boolean; suggest: boolean; trending: boolean; edgeOffloadPct: number; note: string };
+    replicaProbe: string;
+  };
   userDriven?: {
     import: {
       sources: string;
