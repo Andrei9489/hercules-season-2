@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import { createHash } from "node:crypto";
 import { authOptions } from "@/lib/auth";
-import { searchLibrary, insertContent, recordPlayback, normalizeRo } from "@/lib/neon-search";
+import { searchLibrary, insertContent, recordPlayback, normalizeRo, invalidateSearchCache } from "@/lib/neon-search";
 import { q, qOne } from "@/lib/pg";
 import { resolveSource, titleFromUrl } from "@/lib/source-resolver";
+import { parseM3U, normalizeM3UInputUrl, type M3UChannel } from "@/lib/m3u-parser";
+import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
 
 type Item = Record<string, unknown>;
 
@@ -266,6 +269,191 @@ export async function POST(req: NextRequest) {
       added: sessionSaved.length,
       duplicates,
       failed,
+    });
+  }
+
+  // ---------- M3U: import playlist de utilizator (paste text sau URL) ----------
+  if (action === "m3u") {
+    // operație scumpă → rate limit per IP (5 importuri / minut)
+    const rl = rateLimit(`m3u:${clientIp(req)}`, { burst: 5, perMinute: 6 });
+    if (!rl.ok) return tooMany(rl);
+
+    const session = await getServerSession(authOptions).catch(() => null);
+    const userId = session?.user?.email || null;
+
+    // 1) obține textul M3U: paste direct sau URL descărcat server-side
+    let m3uText = typeof body.content === "string" ? body.content : "";
+    const srcUrl = typeof body.url === "string" ? body.url.trim() : "";
+    if (!m3uText && srcUrl) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 20_000);
+        const res = await fetch(normalizeM3UInputUrl(srcUrl), {
+          signal: ctrl.signal,
+          cache: "no-store",
+          headers: { "User-Agent": "StreamVerse/1.0 (+playlist-import)" },
+        });
+        clearTimeout(t);
+        if (!res.ok) {
+          return NextResponse.json(
+            { error: "fetch-failed", message: `URL-ul a răspuns ${res.status} — verifică linkul.` },
+            { status: 400 }
+          );
+        }
+        const raw = await res.text();
+        if (raw.length > 12_000_000) {
+          return NextResponse.json({ error: "too-large", message: "Playlist peste 12 MB — împarte-l în mai multe importuri." }, { status: 413 });
+        }
+        if (!/#EXTM3U|#EXTINF/i.test(raw)) {
+          return NextResponse.json(
+            { error: "not-m3u", message: "URL-ul nu returnează un playlist M3U (fără #EXTM3U/#EXTINF)." },
+            { status: 400 }
+          );
+        }
+        m3uText = raw;
+      } catch {
+        return NextResponse.json(
+          { error: "fetch-failed", message: "Nu am putut descărca playlistul (timeout sau rețea)." },
+          { status: 400 }
+        );
+      }
+    }
+    if (!m3uText.trim()) return NextResponse.json({ error: "empty", message: "Lipește conținutul M3U sau un URL." }, { status: 400 });
+
+    // 2) parse robust
+    const parsed = parseM3U(m3uText);
+    if (parsed.channels.length === 0) {
+      return NextResponse.json(
+        { error: "no-channels", message: parsed.errors.join(" ") || "Playlistul nu conține canale." },
+        { status: 400 }
+      );
+    }
+    if (parsed.channels.length > 20_000) {
+      return NextResponse.json(
+        { error: "too-many", message: `Maxim 20.000 canale per import (primit ${parsed.channels.length}).` },
+        { status: 400 }
+      );
+    }
+
+    let playlistHost = "Playlist utilizator";
+    if (srcUrl) {
+      try { playlistHost = new URL(normalizeM3UInputUrl(srcUrl)).hostname; } catch { /* keep */ }
+    }
+    const playlistName = parsed.playlistName || playlistHost;
+
+    // 3) mapare pe rânduri content + dedup intern
+    const detectStreamType = (url: string): string => {
+      const l = url.toLowerCase();
+      if (l.includes(".m3u8")) return "hls";
+      if (l.endsWith(".mpd")) return "dash";
+      if (l.startsWith("srt://")) return "srt";
+      if (l.endsWith(".ts") || l.startsWith("udp://") || l.startsWith("rtp://")) return "ts";
+      return "url";
+    };
+    const countryFromTvgId = (tvgId: string | null): string | null => {
+      if (!tvgId) return null;
+      const m = /\.([a-z]{2})@/i.exec(tvgId) || /\.([a-z]{2})(?:\.|$)/i.exec(tvgId);
+      return m ? m[1].toUpperCase() : null;
+    };
+
+    const seen = new Set<string>();
+    const rows: (string | number | null)[][] = [];
+    let internalDup = 0;
+
+    for (const ch of parsed.channels as M3UChannel[]) {
+      const extId = `m3u:${createHash("md5").update(ch.url).digest("hex")}`;
+      if (seen.has(extId)) { internalDup++; continue; }
+      seen.add(extId);
+      const searchText = normalizeRo(
+        [ch.name, ch.groups.join(" "), playlistName, ch.isRadio ? "radio live" : "tv live"].join(" ")
+      );
+      rows.push([
+        extId,
+        ch.name,
+        `Canal din playlistul „${playlistName}"${ch.groups.length ? ` • ${ch.groups.join(", ")}` : ""}.`,
+        ch.isRadio ? "radio" : "live_tv",
+        ch.groups[0] || null,
+        "Global",
+        countryFromTvgId(ch.tvgId),
+        "ro",
+        "m3u",
+        detectStreamType(ch.url),
+        ch.url,
+        ch.logo,
+        [...ch.groups, ch.quality, ch.geoBlocked ? "geo-blocked" : null, ch.not247 ? "not-24-7" : null].filter(Boolean),
+        searchText,
+        JSON.stringify({
+          playlistName,
+          tvgId: ch.tvgId,
+          quality: ch.quality,
+          geoBlocked: ch.geoBlocked,
+          not247: ch.not247,
+          groups: ch.groups,
+        }),
+        userId,
+      ]);
+    }
+
+    // 4) dedup vs. DB (pre-SELECT pe indexul external_id) + INSERT multi-VALUES pe chunk-uri
+    const CHUNK = 300;
+    let added = 0;
+    let dbDup = 0;
+    const groupCount = new Map<string, number>();
+
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      const ids = chunk.map((r) => String(r[0]));
+      const existing = await q<{ external_id: string }>(
+        `SELECT external_id FROM content WHERE external_id = ANY($1::text[])`,
+        [ids]
+      ).catch(() => [] as { external_id: string }[]);
+      const existingSet = new Set(existing.map((e) => e.external_id));
+      dbDup += existingSet.size;
+
+      const fresh = existingSet.size ? chunk.filter((r) => !existingSet.has(String(r[0]))) : chunk;
+      if (fresh.length === 0) continue;
+
+      const values: string[] = [];
+      const params: unknown[] = [];
+      let p = 0;
+      for (const r of fresh) {
+        const ph = r.map(() => { p++; return `$${p}`; });
+        values.push(`(${ph.join(",")})`);
+        params.push(...r);
+      }
+      const res = await q<{ id: number }>(
+        `INSERT INTO content
+           (external_id, title, description, content_type, category, continent, country, language,
+            provider, source_type, source_url, thumbnail, tags, search_text, meta, created_by)
+         VALUES ${values.join(",")}
+         RETURNING id`,
+        params
+      ).catch(() => [] as { id: number }[]);
+      added += res.length;
+    }
+
+    // 5) facet grupuri (pentru raportul din UI)
+    for (const ch of parsed.channels) {
+      for (const g of ch.groups) groupCount.set(g, (groupCount.get(g) || 0) + 1);
+    }
+    const topGroups = [...groupCount.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 24)
+      .map(([group, n]) => ({ group, n }));
+
+    // 6) invalidare cache căutare (L1+L2) — noile canale apar instant
+    if (added > 0) invalidateSearchCache();
+
+    return NextResponse.json({
+      ok: true,
+      playlistName,
+      parsed: parsed.channels.length,
+      parsedRadio: parsed.channels.filter((c) => c.isRadio).length,
+      added,
+      duplicates: internalDup + dbDup,
+      skipped: parsed.skipped,
+      errors: parsed.errors,
+      topGroups,
     });
   }
 

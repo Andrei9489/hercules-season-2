@@ -158,6 +158,18 @@ export function CapacityPanel() {
                   🔀 Router READ/WRITE: pool citiri {st.db.readPoolMax} conexiuni {st.db.readReplica ? "(REPLICA dedicată activă)" : "(izolate de scrieri, replica-ready)"} • pool scrieri 12
                 </p>
               )}
+              {st.resilience && (
+                <p className="mt-1 truncate text-[10px] text-zinc-600">
+                  🛡️ Reziliență (Faza {st.resilience.phase}): circuit breaker {st.resilience.circuitBreaker.state} ({st.resilience.circuitBreaker.totalTrips} trip-uri • {st.resilience.circuitBreaker.totalFailFast} fail-fast) •
+                  admission control {st.resilience.admissionControl.inFlight}/{st.resilience.admissionControl.maxConcurrent} în zbor ({st.resilience.admissionControl.timedOut} timeout-uri coadă) •
+                  statement timeout {st.resilience.statementTimeout.readMs / 1000}s citiri / {st.resilience.statementTimeout.writeMs / 1000}s scrieri • {st.resilience.healthEndpoint}
+                </p>
+              )}
+              {st.userDriven && (
+                <p className="mt-1 truncate text-[10px] text-zinc-600">
+                  ⬆️ Import tău: {st.userDriven.import.platforms.slice(0, 8).join(", ")}... + playlist M3U/IPTV {st.userDriven.import.m3u.enabled ? `ACTIV (max ${st.userDriven.import.m3u.maxPerImport.toLocaleString("ro-RO")} canale/import, idempotent)` : ""}
+                </p>
+              )}
             </div>
           </div>
         )}

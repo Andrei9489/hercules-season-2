@@ -6,8 +6,18 @@
 // (Neon read-replica). Fără replică, pool-ul RO izolează totuși citirile
 // de scrieri (conexiuni + handshake separat) — sub benchmark, contensia
 // pe pool-ul partajat scade vizibil.
+// Faza 9: RESILIENȚĂ — circuit breaker (fail-fast când DB e picat),
+// admission control pe citirile RO (plafon concurență + coadă) și
+// statement_timeout per pool (nicio interogare nu poate bloca instanța).
 import { neonConfig, Pool } from "@neondatabase/serverless";
 import WebSocket from "ws";
+import {
+  dbAllow,
+  dbReportSuccess,
+  dbReportFailure,
+  withAdmission,
+  AdmissionRejected,
+} from "./circuit-breaker";
 
 neonConfig.webSocketConstructor = WebSocket as unknown as typeof globalThis.WebSocket;
 
@@ -30,13 +40,17 @@ const RO_URL =
     ? (process.env.NEON_REPLICA_URL as string)
     : DB_URL;
 
-function makePool(connectionString: string, max: number): Pool {
+function makePool(connectionString: string, max: number, statementTimeoutMs: number): Pool {
   const p = new Pool({
     connectionString,
     max,
     idleTimeoutMillis: 15_000,
     connectionTimeoutMillis: 10_000,
-  });
+    // Faza 9: nicio interogare nu poate bloca o conexiune la nesfârșit —
+    // citirile 8s (origin search/suggest), scrierile 20s (bulk M3U/AI jobs).
+    statement_timeout: statementTimeoutMs,
+    query_timeout: statementTimeoutMs + 2_000,
+  } as never);
   p.on("error", (err) => {
     console.error("Neon pool error (ignored):", err.message);
   });
@@ -45,7 +59,7 @@ function makePool(connectionString: string, max: number): Pool {
 
 function getPool(): Pool {
   if (!globalForPg.__pgPool) {
-    globalForPg.__pgPool = makePool(DB_URL, 12); // scrieri + origin reads
+    globalForPg.__pgPool = makePool(DB_URL, 12, 20_000); // scrieri + origin reads
   }
   return globalForPg.__pgPool;
 }
@@ -55,7 +69,7 @@ function getPoolRo(): Pool {
     // Faza 6: pool RO dedicat (replica-ready). max 10 → total conexiuni
     // pe compute Neon rămâne moderat, dar citirile nu mai concurează
     // cu scrierile la coada pe aceleași 12 conexiuni.
-    globalForPg.__pgPoolRo = makePool(RO_URL, 10);
+    globalForPg.__pgPoolRo = makePool(RO_URL, 10, 8_000);
   }
   return globalForPg.__pgPoolRo;
 }
@@ -72,9 +86,21 @@ function isTransient(e: unknown): boolean {
     msg.includes("Connection terminated") ||
     msg.includes("timeout") ||
     msg.includes("Websocket") ||
-    msg.includes("Cannot use a pool after calling end")
+    msg.includes("Cannot use a pool after calling end") ||
+    msg.includes("statement timeout") ||
+    msg.includes("canceling statement due to statement timeout")
   );
 }
+
+/** Eroare dedicată: circuit deschis sau admission full — apelantul servește degradat. */
+export class DbUnavailable extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = "DbUnavailable";
+  }
+}
+
+export { AdmissionRejected };
 
 /** Înlocuiește pool-ul o singură dată (mutex) — previne cursa multi-caller. */
 async function replacePool(ro: boolean): Promise<void> {
@@ -97,15 +123,40 @@ async function replacePool(ro: boolean): Promise<void> {
 }
 
 async function run<T>(ro: boolean, sql: string, params: unknown[]): Promise<T[]> {
+  // Faza 9: circuit breaker — când DB e jos, eșuăm INSTANT (fail-fast)
+  // pentru ca straturile de deasupra să servească din cache (mod degradat).
+  const permit = dbAllow();
+  if (!permit.allowed) {
+    throw new DbUnavailable(`circuit ${permit.state} — DB temporar indisponibil`);
+  }
+
   let lastErr: unknown;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const pool = ro ? getPoolRo() : getPool();
-      const res = await pool.query(sql, params as never[]);
+      const exec = () => pool.query(sql, params as never[]) as Promise<{ rows: T[] }>;
+      // Faza 9: admission control DOAR pe citirile RO (origin search/suggest/
+      // trending/listări) — scrierile trec necondiționat (import M3U, play events).
+      const res = ro ? await withAdmission(exec) : await exec();
+      dbReportSuccess();
       return res.rows as T[];
     } catch (e) {
       lastErr = e;
-      if (!isTransient(e)) throw e;
+      // AdmissionRejected nu e o eroare DB — nu recalculăm pool-ul, doar încercăm
+      // din nou (coada s-ar fi mișcat) până se consumă retry-urile.
+      if (e instanceof AdmissionRejected) {
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 80 * attempt));
+          continue;
+        }
+        throw e;
+      }
+      if (!isTransient(e)) {
+        // eroare de logică/SQL (nu de conexiune) — NU trip-uiește breaker-ul
+        throw e;
+      }
+      // eroare tranzientă de conexiune/overload → semnalăm breaker-ului
+      dbReportFailure();
       if (attempt < 3) {
         // a doua eșuare → pool-ul e suspect; înlocuim sub mutex și reîncercăm
         if (attempt >= 2) await replacePool(ro);
@@ -113,6 +164,8 @@ async function run<T>(ro: boolean, sql: string, params: unknown[]): Promise<T[]>
       }
     }
   }
+  // toate reîncercările au eșuat cu erori tranziente → breaker
+  dbReportFailure();
   throw lastErr;
 }
 

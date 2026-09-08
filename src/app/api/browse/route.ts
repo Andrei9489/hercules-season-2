@@ -6,6 +6,7 @@
 //  - răspuns: items, page, size, total, totalPages, hasNext, hasPrev
 import { NextRequest, NextResponse } from "next/server";
 import { q, qRead } from "@/lib/pg";
+import { normalizeRo } from "@/lib/neon-search";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,18 @@ const SORTS: Record<string, string> = {
   title: "c.title ASC",
   views: "c.views DESC, c.popularity DESC",
   newest_added: "c.created_at DESC",
+};
+
+// Faza 9: meniurile tematiche (Știri/Sport/Documentare/Muzică) includ și
+// CANALE LIVE importate de utilizator (M3U) al căror grup/categorie indică
+// tema — ex: playlistul „Popular News" ajunge și în meniul Știri, nu doar
+// în TV Live. Cuvintele-cheie se compară pe category (ILIKE) și search_text
+// (normalizat fără diacritice).
+const TYPE_LIVE_KEYWORDS: Record<string, string[]> = {
+  news: ["news", "stiri", "jurnal"],
+  sport: ["sport", "sports"],
+  documentary: ["documentary", "documentar"],
+  music: ["music", "muzica"],
 };
 
 export async function GET(req: NextRequest) {
@@ -35,7 +48,24 @@ export async function GET(req: NextRequest) {
 
   const where: string[] = ["TRUE"];
   const params: unknown[] = [];
-  if (type) { params.push(type); where.push(`c.content_type = $${params.length}`); }
+  if (type) {
+    params.push(type);
+    let cond = `c.content_type = $${params.length}`;
+    const kws = TYPE_LIVE_KEYWORDS[type];
+    if (kws) {
+      params.push("live_tv");
+      const tIdx = params.length;
+      const kwConds = kws.flatMap((kw) => {
+        params.push(`%${kw}%`);
+        const a = params.length;
+        params.push(`%${normalizeRo(kw)}%`);
+        const b = params.length;
+        return [`(c.category ILIKE $${a} OR c.search_text LIKE $${b})`];
+      });
+      cond += ` OR (c.content_type = $${tIdx} AND (${kwConds.join(" OR ")}))`;
+    }
+    where.push(`(${cond})`);
+  }
   if (brand) { params.push(brand); where.push(`c.brand = $${params.length}`); }
   if (search) { params.push(`%${search}%`); where.push(`c.search_text LIKE $${params.length}`); }
   let joinTax = "";

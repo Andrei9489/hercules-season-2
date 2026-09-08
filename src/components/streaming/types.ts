@@ -69,8 +69,25 @@ export type CapacityStatus = {
     };
   };
   player?: { compatPct: number; engines: string[] };
+  resilience?: {
+    phase: number;
+    circuitBreaker: { state: string; failures: number; totalTrips: number; totalFailFast: number; openedAt: number | null };
+    admissionControl: { inFlight: number; waiting: number; maxConcurrent: number; maxObserved: number; timedOut: number };
+    statementTimeout: { readMs: number; writeMs: number };
+    degradedMode: string;
+    healthEndpoint: string;
+  };
+  userDriven?: {
+    import: {
+      sources: string;
+      platforms: string[];
+      m3u: { enabled: boolean; maxPerImport: number; idempotent: boolean; features: string[] };
+      metadateReale: string;
+    };
+  };
   benchmark?: {
     at: string; peakLocalRps: number; note: string;
+    comparableAnchorRps?: number;
     concurrent150: { rps: number; errors?: number; cacheHitPct: number; p95Ms?: number };
     concurrent50: { rps: number; p95Ms: number; cacheHitPct: number };
     concurrent300?: { rps: number; errors: number; cacheHitPct: number };

@@ -9,7 +9,7 @@
 // logging asincron în search_logs + search_stats.
 // Țintă finală: 30 miliarde itemi • 10.000 căutări simultane.
 // ============================================================
-import { q, qOne, qRead } from "./pg";
+import { q, qOne, qRead, AdmissionRejected, DbUnavailable } from "./pg";
 
 /** Normalizează text RO/EN: fără diacritice, lowercase, doar [a-z0-9 spații]. */
 export function normalizeRo(s: string): string {
@@ -109,6 +109,13 @@ function cacheGet(key: string): LibraryHit[] | null {
   return hit.data;
 }
 
+/** Faza 9: STALE-WHILE-ERROR — citește și intrări EXPIRATE din L1.
+ *  Când origin/DB e picat, mai bine servim rezultate puțin vechi decât o eroare. */
+function cacheGetStale(key: string): LibraryHit[] | null {
+  const hit = searchCache.get(key);
+  return hit ? hit.data : null;
+}
+
 function cacheSet(key: string, data: LibraryHit[]): void {
   if (searchCache.size >= CACHE_MAX) {
     const oldest = searchCache.keys().next().value;
@@ -146,7 +153,7 @@ type SearchOpts = { limit?: number; offset?: number; type?: string; brand?: stri
 export async function searchLibrary(
   query: string,
   opts: SearchOpts = {}
-): Promise<{ hits: LibraryHit[]; tookMs: number; cached: boolean; totalIndexed: number }> {
+): Promise<{ hits: LibraryHit[]; tookMs: number; cached: boolean; totalIndexed: number; degraded?: boolean }> {
   const t0 = Date.now();
   const { limit = 24, offset = 0, type, brand } = opts;
   const norm = normalizeRo(query).slice(0, 120);
@@ -250,6 +257,15 @@ export async function searchLibrary(
   try {
     const hits = await exec;
     return { hits, tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
+  } catch (e) {
+    // Faza 9: STALE-WHILE-ERROR — origin indisponibil (circuit open,
+    // admission full, statement timeout, rețea)? Servim cache-ul L1
+    // expirat dacă există, marcat „degraded”. Utilizatorul NU vede erori.
+    const stale = cacheGetStale(cacheKey);
+    if (stale) {
+      return { hits: stale, tookMs: Date.now() - t0, cached: true, totalIndexed: 0, degraded: true };
+    }
+    throw e;
   } finally {
     inFlight.delete(cacheKey);
   }
@@ -306,6 +322,12 @@ function sugGet<T>(key: string): T | null {
   sugCache.delete(key);
   sugCache.set(key, hit);
   return hit.data as T;
+}
+
+/** Faza 9: varianta stale — servește și intrări expirate la eșec DB. */
+function sugGetStale<T>(key: string): T | null {
+  const hit = sugCache.get(key);
+  return hit ? (hit.data as T) : null;
 }
 
 function sugSet(key: string, data: unknown): void {
@@ -391,6 +413,15 @@ export async function suggest(prefix: string, limit = 7): Promise<string[]> {
   sugInFlight.set(key, exec);
   try {
     return await exec;
+  } catch (e) {
+    // Faza 9: stale-while-error pe sugestii — autocompletarea nu afișează
+    // niciodată eroare; cade pe cache-ul vechi sau pe listă goală.
+    const stale = sugGetStale<string[]>(key);
+    if (stale) return stale;
+    if (e instanceof AdmissionRejected || e instanceof DbUnavailable) {
+      return [];
+    }
+    throw e;
   } finally {
     sugInFlight.delete(key);
   }
@@ -432,6 +463,7 @@ export async function trending(limit = 8): Promise<TrendItem[]> {
   const key = `trend:${limit}`;
   const cached = sugGet<TrendItem[]>(key);
   if (cached) return cached;
+  try {
   // Faza 5: și trendingul primește L2 distribuit (TTL 120s)
   const l2 = await l2Get<TrendItem[]>(key, L2_TTL_TREND_SEC);
   if (l2 && Array.isArray(l2)) {
@@ -446,6 +478,15 @@ export async function trending(limit = 8): Promise<TrendItem[]> {
   sugSet(key, items);
   void l2Set(key, items);
   return items;
+  } catch (e) {
+    // Faza 9: trending NU crapă niciodată — stale sau gol
+    const stale = sugGetStale<TrendItem[]>(key);
+    if (stale) return stale;
+    if (e instanceof AdmissionRejected || e instanceof DbUnavailable) {
+      return [];
+    }
+    throw e;
+  }
 }
 
 // ---------- Logging asincron (fire-and-forget, nu blochează răspunsul) ----------
