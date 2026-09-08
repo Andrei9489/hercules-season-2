@@ -9,15 +9,21 @@ type Props = {
   title: string;
   contentId?: number | null;
   compact?: boolean;
+  /** URL semnat server-side (token/HMAC/JWT) — când există, înlocuiește src. */
+  signedSrc?: string | null;
+  /** Semnarea în curs (se cere /api/stream/sign). */
+  signing?: boolean;
 };
 
 /**
  * Player universal: redă din orice sursă —
  *  iframe (YouTube/Vimeo/Dailymotion/ok.ru/Rumble/Twitch/etc.),
- *  video nativ (MP4/WebM), HLS (hls.js), DASH (dash.js), HTML embed
- *  sandoboxat, sursă necunoscută → iframe generic + fallback extern.
+ *  video nativ (MP4/WebM), HLS (hls.js), DASH (dash.js),
+ *  MPEG-TS (mpegts.js), HTML embed sandoboxat, sursă necunoscută →
+ *  iframe generic + fallback extern; protocoale non-HTTP (SRT/RTMP/
+ *  UDP/RTSP) → mesaj clar + copiere URL (browserele nu le pot reda).
  */
-export function UniversalPlayer({ source, title, contentId, compact }: Props) {
+export function UniversalPlayer({ source, title, contentId, compact, signedSrc, signing }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [fallback, setFallback] = useState(false);
@@ -59,9 +65,10 @@ export function UniversalPlayer({ source, title, contentId, compact }: Props) {
     };
   }, [contentId, source.provider]);
 
-  // HLS prin hls.js (import dinamic)
+  // HLS prin hls.js (import dinamic) — suportă și URL semnat server-side
   useEffect(() => {
     if (source.kind !== "hls") return;
+    const src = signedSrc || source.src;
     let destroyed = false;
     let hls: { destroy: () => void } | null = null;
     (async () => {
@@ -72,14 +79,14 @@ export function UniversalPlayer({ source, title, contentId, compact }: Props) {
         if (!video) return;
         if (Hls.isSupported()) {
           const engine = new Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 30 });
-          engine.loadSource(source.src);
+          engine.loadSource(src);
           engine.attachMedia(video);
           engine.on(Hls.Events.ERROR, (_e, data) => {
             if (data.fatal) setMediaError("Streamul HLS nu poate fi redat momentan.");
           });
           hls = engine;
         } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-          video.src = source.src; // Safari nativ
+          video.src = src; // Safari nativ
         } else {
           setMediaError("HLS nu este suportat în acest browser.");
         }
@@ -91,7 +98,7 @@ export function UniversalPlayer({ source, title, contentId, compact }: Props) {
       destroyed = true;
       if (hls) hls.destroy();
     };
-  }, [source]);
+  }, [source, signedSrc]);
 
   // DASH prin dash.js (import dinamic) — canale .mpd (BBC, Polsat etc.)
   useEffect(() => {
@@ -125,12 +132,82 @@ export function UniversalPlayer({ source, title, contentId, compact }: Props) {
     };
   }, [source]);
 
+  // MPEG-TS prin mpegts.js (import dinamic) — streamuri .ts directe
+  useEffect(() => {
+    if (source.kind !== "ts") return;
+    const src = signedSrc || source.src;
+    let destroyed = false;
+    type TsPlayer = { destroy: () => void; unload: () => void; attachMediaElement: (el: HTMLVideoElement) => void; load: () => void; play: () => void };
+    let player: TsPlayer | null = null;
+    (async () => {
+      try {
+        const mod = await import("mpegts.js");
+        const mpegts = (mod as unknown as { default?: typeof import("mpegts.js") }).default ?? mod;
+        const video = videoRef.current;
+        if (!video || destroyed) return;
+        if (!mpegts.getFeatureList().mseLivePlayback) {
+          setMediaError("Browserul nu suportă redare MPEG-TS (MSE lipsă).");
+          return;
+        }
+        const p = mpegts.createPlayer(
+          { type: "mpegts", isLive: true, url: src },
+          { enableWorker: true, enableStashBuffer: false, liveBufferLatencyChasing: true }
+        );
+        p.attachMediaElement(video);
+        p.load();
+        p.play().catch(() => {});
+        p.on(mpegts.Events.ERROR, () => {
+          if (!destroyed) setMediaError("Streamul MPEG-TS nu poate fi redat momentan.");
+        });
+        player = p as unknown as TsPlayer;
+      } catch {
+        if (!destroyed) setMediaError("Nu am putut încărca motorul MPEG-TS.");
+      }
+    })();
+    return () => {
+      destroyed = true;
+      try { player?.unload(); player?.destroy(); } catch { /* ignore */ }
+    };
+  }, [source, signedSrc]);
+
   const outer = compact ? "h-full w-full" : "absolute inset-0 h-full w-full";
 
-  if (source.kind === "video" || source.kind === "hls" || source.kind === "dash") {
+  // ---------- Protocoale non-HTTP: SRT / RTMP / RTSP / UDP ----------
+  // Browserele NU pot deschide aceste transporturi (UDP/non-HTTP).
+  // Oferim mesaj clar + copiere URL pentru player extern (VLC/ffplay)
+  // — fără iframe spart, fără eroare confuză.
+  if (source.kind === "unplayable") {
+    const copy = () => {
+      try {
+        void navigator.clipboard.writeText(source.url);
+      } catch { /* clipboard blocat — utilizatorul vede URL-ul */ }
+    };
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+        <ShieldAlert className="h-9 w-9 text-amber-400" />
+        <p className="text-sm font-bold text-zinc-200">Protocol {source.protocol.toUpperCase()} — necesită player extern</p>
+        <p className="max-w-md text-xs leading-relaxed text-zinc-400">
+        Browserul nu poate deschide transporturi {source.protocol.toUpperCase()} (non-HTTP).
+        Restreamază sursa în HLS/DASH (ex: MediaMTX, nginx-rtmp, ffmpeg) pentru redare web
+        sau deschide direct în VLC / ffplay.
+        </p>
+        <code className="max-w-full truncate rounded bg-zinc-900 px-3 py-1.5 text-[11px] text-zinc-300">{source.url}</code>
+        <div className="flex gap-2">
+          <button onClick={copy} className="rounded bg-zinc-800 px-4 py-2 text-xs font-bold text-zinc-100 hover:bg-zinc-700">Copiază URL</button>
+          <a href={source.url} onClick={(e) => e.preventDefault()} className="pointer-events-none rounded bg-zinc-900 px-4 py-2 text-xs text-zinc-500">Deschide extern (VLC)</a>
+        </div>
+      </div>
+    );
+  }
+
+  if (source.kind === "video" || source.kind === "hls" || source.kind === "dash" || source.kind === "ts") {
     return (
       <div className={outer}>
-        {mediaError ? (
+        {signing ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-zinc-700 border-t-red-600" />
+          </div>
+        ) : mediaError ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
             <ShieldAlert className="h-8 w-8 text-amber-400" />
             <p className="text-sm text-zinc-400">{mediaError}</p>
@@ -141,7 +218,7 @@ export function UniversalPlayer({ source, title, contentId, compact }: Props) {
         ) : (
           <video
             ref={videoRef}
-            src={source.kind === "video" ? source.src : undefined}
+            src={source.kind === "video" ? (signedSrc || source.src) : undefined}
             controls
             autoPlay
             playsInline

@@ -26,6 +26,9 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [playing, setPlaying] = useState(true);
   const [elapsed, setElapsed] = useState(0);
+  // Faza 10 — semnare server-side: URL semnat obținut de la /api/stream/sign
+  const [signedSrc, setSignedSrc] = useState<string | null>(null);
+  const [signing, setSigning] = useState(false);
   const startedAt = useRef<number>(0);
   const saveTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -36,6 +39,31 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
     if (!raw) return null;
     return resolveSource(raw, { parent: typeof window !== "undefined" ? window.location.hostname : "" });
   }, [item]);
+
+  // Faza 10 — dacă streamul are configurație de semnare (token/HMAC/JWT),
+  // cerem URL-ul semnat server-side (secretul NU ajunge în browser).
+  useEffect(() => {
+    setSignedSrc(null);
+    setSigning(false);
+    const cid = item?.neonId ?? (typeof item?.id === "number" ? item.id : null);
+    if (!open || !item || !cid || !(item as { signed?: boolean }).signed) return;
+    if (!universalSource || !["video", "hls", "dash", "ts"].includes(universalSource.kind)) return;
+    let cancelled = false;
+    setSigning(true);
+    (async () => {
+      try {
+        const res = await fetch("/api/stream/sign", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contentId: cid }),
+        });
+        const j = (await res.json()) as { ok?: boolean; signedUrl?: string };
+        if (!cancelled && j.ok && j.signedUrl) setSignedSrc(j.signedUrl);
+      } catch { /* la eșec cădem pe sursa brută */ }
+      finally { if (!cancelled) setSigning(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [open, item, universalSource]);
 
   useEffect(() => {
     if (!open || !item) return;
@@ -110,7 +138,9 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
   const playKind = universalSource
     ? universalSource.kind === "html" ? "cod embed" :
       universalSource.kind === "hls" ? "stream HLS" :
-      universalSource.kind === "video" ? "fișier direct" : "sursă externă"
+      universalSource.kind === "ts" ? "stream MPEG-TS" :
+      universalSource.kind === "video" ? "fișier direct" :
+      universalSource.kind === "unplayable" ? `protocol ${universalSource.protocol.toUpperCase()} (extern)` : "sursă externă"
     : null;
 
   return (
@@ -131,6 +161,8 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
                 source={universalSource}
                 title={item.title}
                 contentId={item.neonId ?? (typeof item.id === "number" ? item.id : null)}
+                signedSrc={signedSrc}
+                signing={signing}
               />
             </div>
           )}
@@ -165,7 +197,7 @@ export function PlayerModal({ item, open, onClose, authed }: Props) {
           <div className="min-w-0">
             <p className="truncate text-sm font-bold text-zinc-100">{item.title}</p>
             <p className="text-xs text-zinc-500">
-              {playKind ? `Redare din ${playKind} • ${universalSource?.providerLabel}` : isMusic ? "Videoclip muzical" : "Trailer oficial"} • Timp vizionat: {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+              {playKind ? `Redare din ${playKind} • ${universalSource?.providerLabel}${(item as { signed?: boolean }).signed && universalSource?.kind !== "unplayable" ? " • URL semnat" : ""}` : isMusic ? "Videoclip muzical" : "Trailer oficial"} • Timp vizionat: {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
               {!authed && " • Conectează-te pentru a salva progresul"}
             </p>
           </div>

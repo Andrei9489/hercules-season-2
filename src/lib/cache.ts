@@ -11,7 +11,7 @@ try {
 type CacheEntry = { data: unknown; expires: number };
 
 const store = new Map<string, CacheEntry>();
-const MAX_ENTRIES = 500;
+const MAX_ENTRIES = 3_000; // Faza 10: crescut (browse L1 + stale fallback)
 
 export function cacheGet<T>(key: string): T | null {
   const hit = store.get(key);
@@ -21,6 +21,16 @@ export function cacheGet<T>(key: string): T | null {
     return null;
   }
   return hit.data as T;
+}
+
+/**
+ * Faza 10 — cacheGetStale: returnează intrarea chiar dacă e expirată
+ * (stale-while-error). Folosită de browse ca fallback la overload/
+ * DB lent: utilizatorul primește pagina veche în loc de eroare.
+ */
+export function cacheGetStale<T>(key: string): T | null {
+  const hit = store.get(key);
+  return hit ? (hit.data as T) : null;
 }
 
 export function cacheSet(key: string, data: unknown, ttlSeconds: number): void {

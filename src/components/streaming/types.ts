@@ -18,6 +18,8 @@ export type MediaItem = {
   embedCode?: string | null;
   provider?: string | null;
   neonId?: number | null;
+  /** Stream cu semnare server-side (token/HMAC/JWT) — secretul nu părăsește serverul. */
+  signed?: boolean;
 };
 
 // Item din biblioteca Neon (redare din URL/embed extern)
@@ -42,6 +44,8 @@ export type LibraryItem = {
   rating: number;
   popularity: number;
   views: number;
+  /** Stream cu semnare server-side (token/HMAC/JWT). */
+  signed?: boolean;
 };
 
 export type CapacityStatus = {
@@ -68,7 +72,10 @@ export type CapacityStatus = {
       };
     };
   };
-  player?: { compatPct: number; engines: string[] };
+  player?: {
+    compatPct: number; engines: string[];
+    signing?: { endpoint: string; schemes: string[]; secretExposure: string };
+  };
   resilience?: {
     phase: number;
     circuitBreaker: { state: string; failures: number; totalTrips: number; totalFailFast: number; openedAt: number | null };
@@ -99,7 +106,7 @@ export type CapacityStatus = {
   capacity: {
     engine: { pct: number; validatedRows: number; target: number; phase: number; nextSteps: string[] };
     concurrentSearches: { pct: number; now: number; target: number; mechanisms: string[] };
-    concurrentUsers: { pct: number; now: number; target: number; mechanisms: string[] };
+    concurrentUsers: { pct: number; now: number; target: number; mechanisms: string[]; anchorFormula?: string };
   };
 };
 

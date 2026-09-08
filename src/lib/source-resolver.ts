@@ -13,7 +13,9 @@ export type ResolvedSource =
   | { kind: "video"; src: string; provider: string; providerLabel: string }
   | { kind: "hls"; src: string; provider: string; providerLabel: string }
   | { kind: "dash"; src: string; provider: string; providerLabel: string }
+  | { kind: "ts"; src: string; provider: string; providerLabel: string }
   | { kind: "html"; html: string; provider: string; providerLabel: string }
+  | { kind: "unplayable"; url: string; protocol: string; provider: string; providerLabel: string }
   | { kind: "unknown"; url: string; provider: string; providerLabel: string };
 
 export const PROVIDER_LABELS: Record<string, string> = {
@@ -22,12 +24,28 @@ export const PROVIDER_LABELS: Record<string, string> = {
   vk: "VK", streamable: "Streamable", gdrive: "Google Drive", odysee: "Odysee",
   bitchute: "BitChute", bilibili: "Bilibili", archive: "Archive.org", ted: "TED",
   soundcloud: "SoundCloud", spotify: "Spotify", mixcloud: "Mixcloud",
-  direct: "MP4/WebM direct", hls: "HLS (m3u8)", dash: "DASH (mpd)", embed: "Embed cod", unknown: "Sursă externă",
+  direct: "MP4/WebM direct", hls: "HLS (m3u8)", dash: "DASH (mpd)", ts: "MPEG-TS direct",
+  embed: "Embed cod", unknown: "Sursă externă",
+  srt: "SRT (Secure Reliable Transport)", rtmp: "RTMP", rtsp: "RTSP", udp: "UDP MPEG-TS",
 };
+
+// Protocoale de transport pe care browserele NU le pot reda nativ
+// (necesită gateway/restreamer server-side sau player extern — VLC/ffplay).
+// Le detectăm explicit pentru un mesaj clar + copiere URL, nu iframe spart.
+const UNPLAYABLE_PROTOCOLS: { re: RegExp; protocol: string }[] = [
+  { re: /^srt:\/\//i, protocol: "srt" },
+  { re: /^rtmps?:\/\//i, protocol: "rtmp" },
+  { re: /^rtsp:\/\//i, protocol: "rtsp" },
+  { re: /^(?:udp|rtp):\/\//i, protocol: "udp" },
+];
 
 const DIRECT_RE = /\.(mp4|webm|ogg|ogv|mov|m4v|mp3|m4a|wav)(\?.*)?$/i;
 const HLS_RE = /\.m3u8(\?.*)?$/i;
 const DASH_RE = /\.mpd(\?.*)?$/i;
+// MPEG-TS direct (.ts/.mts) — redat prin mpegts.js în browser (Faza 10).
+// ATENȚIE la ordine: se verifică ÎNAINTE de protocoalele non-HTTP și
+// directe, după protocoalele unplayable (srt:// nu se termină în .ts).
+const TS_RE = /\.(ts|mts)(\?.*)?$/i;
 
 function label(p: string): string {
   return PROVIDER_LABELS[p] || p;
@@ -56,7 +74,20 @@ export function resolveUrl(rawUrl: string, opts: { parent?: string } = {}): Reso
   const lower = url.toLowerCase();
   const parent = opts.parent || "";
 
+  // ---------- Protocoale non-HTTP (nu se pot reda în browser) ----------
+  for (const p of UNPLAYABLE_PROTOCOLS) {
+    if (p.re.test(url)) {
+      return {
+        kind: "unplayable", url, protocol: p.protocol,
+        provider: p.protocol, providerLabel: label(p.protocol),
+      };
+    }
+  }
+
   // ---------- Fișiere directe ----------
+  if (TS_RE.test(lower)) {
+    return { kind: "ts", src: url, provider: "ts", providerLabel: label("ts") };
+  }
   if (HLS_RE.test(lower)) {
     return { kind: "hls", src: url, provider: "hls", providerLabel: label("hls") };
   }
@@ -314,8 +345,11 @@ export function resolveSource(input: string, opts: { parent?: string } = {}): Re
     return resolved;
   }
 
-  // URL cu protocol lipsă?
-  const withProto = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  // URL cu protocol lipsă? (pre+fix DOAR dacă nu are niciun scheme:// —
+  // srt://, rtmp://, udp:// trebuie să treacă NEALTERATE la resolver)
+  const withProto = /^https?:\/\//i.test(trimmed) || /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
   return resolveUrl(withProto, opts);
 }
 

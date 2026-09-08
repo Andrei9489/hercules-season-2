@@ -58,6 +58,31 @@ export function clientIp(req: Request): string {
   );
 }
 
+/**
+ * Faza 10 — token bucket pe NIVELURI: utilizatorii autentificați
+ * (cookie de sesiune next-auth prezent, fără hit DB) primesc buget
+ * mai mare decât anonimii. Protecție corectă: abuzatorii anonimi
+ * sunt limitați agresiv, utilizatorii reali nu simt limita.
+ */
+export function rateLimitTiered(
+  req: Request,
+  key: string,
+  anon: { burst?: number; perMinute?: number },
+  authed: { burst?: number; perMinute?: number }
+): RateResult {
+  const hasSession = Boolean(
+    (req as Request & { cookies?: { get: (n: string) => { value: string } | undefined } }).cookies
+      ?.get?.("next-auth.session-token") ||
+      (req as Request & { cookies?: { get: (n: string) => { value: string } | undefined } }).cookies
+        ?.get?.("__Secure-next-auth.session-token")
+  );
+  // NextRequest are .cookies; Request-urile obișnuite → fallback pe header
+  const authedHeader = req.headers.get("cookie")?.includes("authjs.session-token") ||
+    req.headers.get("cookie")?.includes("next-auth.session-token") ||
+    req.headers.get("cookie")?.includes("__Secure-next-auth.session-token");
+  return rateLimit(key, hasSession || authedHeader ? authed : anon);
+}
+
 /** Răspuns JSON standard pentru 429 + header Retry-After. */
 export function tooMany(r: RateResult): Response {
   return new Response(

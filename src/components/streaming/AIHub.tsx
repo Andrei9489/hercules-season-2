@@ -41,6 +41,7 @@ type BrowseItem = {
   thumbnail: string | null; backdrop: string | null; year: number | null;
   rating: number; views: number; provider: string; sourceType: string;
   sourceUrl: string | null; embedCode: string | null; country: string | null;
+  signed?: boolean;
 };
 type BrowseResp = {
   items: BrowseItem[]; page: number; size: number; total: number;
@@ -104,7 +105,7 @@ export function AIHub({
     id: String(b.id), mediaType: "neon", title: b.title, poster: b.thumbnail,
     backdrop: b.backdrop, overview: b.description, year: b.year ? String(b.year) : "",
     rating: b.rating, source: "neon", sourceUrl: b.sourceUrl, embedCode: b.embedCode,
-    provider: b.provider, neonId: b.id,
+    provider: b.provider, neonId: b.id, signed: Boolean(b.signed),
   });
 
   // ---- încărcări ----

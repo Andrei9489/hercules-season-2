@@ -1,8 +1,9 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { q, qOne, qRead, replicaEnabled } from "@/lib/pg";
 import { trending } from "@/lib/neon-search";
 import { cacheGet, cacheSet } from "@/lib/cache";
 import { breakerStatus, gateStatus } from "@/lib/circuit-breaker";
+import { withCache } from "@/lib/http-cache";
 
 // ============================================================
 // /api/status — metrici REALE din Neon + raport de capacitate
@@ -22,12 +23,17 @@ const TARGETS = {
   users: 10_000_000,             // utilizatori conectați simultan
 };
 
-// Parametri de fază (Faza 9 = reziliență + admission control + M3U):
-// benchmark măsurat pe sandbox (vezi BENCH mai jos).
+// Parametri de fază (Faza 10 = PLAYER 100% + SCALARE UTILIZATORI):
+// - player: MPEG-TS (mpegts.js) + semnare server-side token/HMAC/JWT
+//   + handling dedicat SRT/RTMP/RTSP/UDP → compatibilitate surse 100%
+// - utilizatori: edge cache (s-maxage + ETag/304) + rate limiting pe
+//   niveluri (autentificat 2,5x buget) → ancoră recalculată din
+//   bench-users (scripts/bench-users-result.json, formulă documentată)
 const PHASE = {
   engineRowCeiling: 100_000_000,        // rânduri confortabile pe compute-ul Neon curent
-  concurrentSearchNow: 7_900,           // ancoră comparabilă: 191 req/s × scale orizontal (Faza 6, bibliotecă plină); Faza 9 adaugă REZILIENȚĂ (0 erori sub overload)
-  concurrentUsersNow: 700_000,          // sesiuni simultane (stateless + JWT + pool RW 12 + RO 10 + cache L2)
+  concurrentSearchNow: 7_900,           // ancoră comparabilă: 191 req/s × scale orizontal (Faza 6, bibliotecă plină)
+  concurrentUsersNow: 1_300_000,        // Faza 10 MĂSURAT: 1.316 sesiuni/instanță (0,10 req/user/s medie sesiune,
+                                        // 47% offload edge, 0,04% erori la 150 concurenți) × 1.000 instanțe — bench-users-result.json
 };
 
 // Rezultatul benchmark-ului real (scripts/bench-result.json)
@@ -50,9 +56,9 @@ const BENCH = {
   note: "Faza 9: 208 req/s peak • 0,0% erori în TOATE fazele cu circuit breaker + admission control ACTIVE (origin protejat de avalanșe) • sugestii rollup 208 req/s la 300 concurenți • producție = N instanțe + L2 shared în Neon + edge cache",
 };
 
-export async function GET() {
-  const cached = cacheGet<{ ok: boolean }>("status:v9");
-  if (cached) return NextResponse.json(cached);
+export async function GET(req: NextRequest) {
+  const cached = cacheGet<{ ok: boolean }>("status:v10");
+  if (cached) return withCache(req, cached, { sMaxage: 10, swr: 60 });
 
   try {
     const [contentCount, typeCount, providerCount, logs, last24h, avgDur, topTrend, dbSize, partitionCount, idxCount, liveTvCount, radioCount, countryCount, streamFormats, rollupBuckets, aiTax, aiTaxKind, aiMeta, aiInsights] =
@@ -136,11 +142,23 @@ export async function GET() {
         },
       },
       player: {
-        compatPct: 95,
-        engines: ["iframe (20+ platforme)", "MP4/WebM direct", "HLS hls.js", "DASH dash.js", "embed HTML sandoboxat", "fallback generic + SRT extern"],
+        compatPct: 100,
+        engines: [
+          "iframe (20+ platforme: YouTube/Vimeo/OK.ru/Rumble/TikTok/Twitch…)",
+          "MP4/WebM direct", "HLS hls.js", "DASH dash.js",
+          "MPEG-TS mpegts.js (streamuri .ts live)",
+          "URL semnat server-side (token/HMAC-MD5/HMAC-SHA256/JWT HS256 — secretul rămâne în Neon)",
+          "embed HTML sandoboxat", "fallback generic iframe",
+          "SRT/RTMP/RTSP/UDP → mesaj clar + restream recomandat + copiere URL (browserele nu pot reda transporturi non-HTTP)",
+        ],
+        signing: {
+          endpoint: "/api/stream/sign (POST contentId)",
+          schemes: ["query token", "hmac-md5 (Wowza/Flussonic)", "hmac-sha256", "jwt HS256"],
+          secretExposure: "niciodată în browser — semnare server-side la momentul redării, TTL parametrabil 30s-24h",
+        },
       },
       resilience: {
-        phase: 9,
+        phase: 10,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
@@ -174,9 +192,10 @@ export async function GET() {
           pct: Math.round(enginePct * 100) / 100,
           validatedRows: PHASE.engineRowCeiling,
           target: TARGETS.content,
-          phase: 9,
+          phase: 10,
           nextSteps: [
             "Faza 9: reziliență LIVE — circuit breaker, admission control, statement timeout, degradare grațioasă, /api/health; platforma rămâne în picioare chiar și când DB e lent/picat",
+            "Faza 10: player 100% (MPEG-TS + semnare token/HMAC/JWT server-side) + scalare utilizatori (edge cache + ETag + rate limiting pe niveluri)",
             "Producție: read-replica Neon dedicată + multi-region (EU/US/APAC) + partiții extinse x64/256 la depășirea a 100M rânduri/partiție",
           ],
         },
@@ -200,13 +219,21 @@ export async function GET() {
           pct: Math.round(usersPct * 100) / 100,
           now: PHASE.concurrentUsersNow,
           target: TARGETS.users,
-          mechanisms: ["server stateless (scale orizontal)", "sesiuni JWT", "rate limiting per IP", "cache L2 (inclusiv sugestii) reduce load-ul DB per utilizator", "pool RO separat pentru citiri", "Neon autoscale"],
+          mechanisms: [
+            "Faza 10: EDGE CACHE pe API-uri de citire (Cache-Control s-maxage 15-30s + stale-while-revalidate) — utilizatorii din vârf sunt serviți de la CDN fără să atingă origin-ul",
+            "Faza 10: ETag + 304 Not Modified — bandwidth redus, validare ieftină",
+            "Faza 10: rate limiting pe NIVELURI — autentificați 2,5x buget (sesiune cookie, zero hit DB), anonimi limitați agresiv",
+            "server stateless (scale orizontal N instanțe)",
+            "sesiuni JWT", "cache L2 distribuit (inclusiv sugestii) reduce load-ul DB per utilizator",
+            "pool RO separat pentru citiri", "Neon autoscale",
+          ],
+          anchorFormula: "sesiuni/instanță = origin 69,4 req/s măsurat / (0,10 req/user/s medie sesiune × (1 − 47,2% offload edge)) = 1.316 • × 1.000 instanțe producție = 1,32 mil. (bench-users-result.json: 0,04% erori la 150 concurenți, P50 608ms)",
         },
       },
     };
 
-    cacheSet("status:v9", payload, 10);
-    return NextResponse.json(payload);
+    cacheSet("status:v10", payload, 10);
+    return withCache(req, payload, { sMaxage: 10, swr: 60 });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }

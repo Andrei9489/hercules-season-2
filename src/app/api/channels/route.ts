@@ -4,6 +4,7 @@ import { cacheGet, cacheSet } from "@/lib/cache";
 import { normalizeRo } from "@/lib/neon-search";
 import { countryName } from "@/lib/countries";
 import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
+import { withCache } from "@/lib/http-cache";
 
 // ============================================================
 // /api/channels — canale TV live (Popular News) + RADIO LIVE din Neon
@@ -144,7 +145,8 @@ export async function GET(req: NextRequest) {
     cacheSet(listKey, { items, filteredTotal }, 60);
     }
 
-    return NextResponse.json(
+    return withCache(
+      req,
       {
         ok: true,
         items,
@@ -154,12 +156,8 @@ export async function GET(req: NextRequest) {
         limit,
         offset,
       },
-      {
-        headers: {
-          "Cache-Control": "public, s-maxage=20, stale-while-revalidate=60",
-          "X-RateLimit-Remaining": String(rl.remaining),
-        },
-      }
+      { sMaxage: 20, swr: 60 },
+      { "X-RateLimit-Remaining": String(rl.remaining) }
     );
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });

@@ -23,6 +23,7 @@ type BrowseItem = {
   provider: string; sourceType: string; thumbnail: string | null;
   backdrop: string | null; year: number | null; rating: number;
   views: number; sourceUrl?: string | null; embedCode?: string | null;
+  signed?: boolean;
 };
 
 type BrowseResp = {
@@ -107,6 +108,7 @@ export function LibraryView({
     sourceUrl: b.sourceUrl ?? null,
     embedCode: b.embedCode ?? null,
     neonId: b.id,
+    signed: Boolean((b as { signed?: boolean }).signed),
   });
 
   const empty = !loading && items.length === 0;

@@ -158,6 +158,16 @@ export function CapacityPanel() {
                   🔀 Router READ/WRITE: pool citiri {st.db.readPoolMax} conexiuni {st.db.readReplica ? "(REPLICA dedicată activă)" : "(izolate de scrieri, replica-ready)"} • pool scrieri 12
                 </p>
               )}
+              {st.player?.signing && (
+                <p className="mt-1 truncate text-[10px] text-zinc-600">
+                  🎬 Player 100%: MPEG-TS (mpegts.js) • semnare server-side {st.player.signing.schemes.join(" / ")} — {st.player.signing.secretExposure} • SRT/RTMP/UDP → restream + copiere URL
+                </p>
+              )}
+              {c.concurrentUsers.anchorFormula && (
+                <p className="mt-1 truncate text-[10px] text-zinc-600">
+                  📐 Ancoră utilizatori: {c.concurrentUsers.anchorFormula}
+                </p>
+              )}
               {st.resilience && (
                 <p className="mt-1 truncate text-[10px] text-zinc-600">
                   🛡️ Reziliență (Faza {st.resilience.phase}): circuit breaker {st.resilience.circuitBreaker.state} ({st.resilience.circuitBreaker.totalTrips} trip-uri • {st.resilience.circuitBreaker.totalFailFast} fail-fast) •

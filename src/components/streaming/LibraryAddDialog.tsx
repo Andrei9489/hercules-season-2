@@ -75,6 +75,13 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
   const [country, setCountry] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // ---- Faza 10: ACCES SECURIZAT (token/HMAC/JWT) ----
+  const [secOn, setSecOn] = useState(false);
+  const [secType, setSecType] = useState("query");
+  const [secParam, setSecParam] = useState("token");
+  const [secSecret, setSecSecret] = useState("");
+  const [secTtl, setSecTtl] = useState("300");
+
   // ---- mod PLAYLIST M3U (Faza 9) ----
   const [m3uText, setM3uText] = useState("");
   const [m3uUrl, setM3uUrl] = useState("");
@@ -131,6 +138,7 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
   const reset = () => {
     setInput(""); setTitle(""); setPosterUrl(""); setDescription("");
     setYear(""); setGenres(""); setType("video"); setBrand(""); setCountry("");
+    setSecOn(false); setSecSecret(""); setSecParam("token"); setSecType("query"); setSecTtl("300");
     setM3uText(""); setM3uUrl("");
   };
 
@@ -142,6 +150,11 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
     setSaving(true);
     try {
       const bulk = lines.length > 1;
+      // Faza 10 — semnarea se aplică doar în mod singular, pe streamuri directe
+      const direct = detected && ["video", "hls", "dash", "ts"].includes(detected.kind);
+      const signing = secOn && !bulk && direct && secSecret.trim().length >= 4
+        ? { type: secType, param: secParam.trim() || "token", secret: secSecret.trim(), ttlSec: Number(secTtl) || 300 }
+        : undefined;
       const r = await api.libraryPost<{ added: number; duplicates: string[]; failed: string[]; items: LibraryItem[] }>({
         action: "add",
         items: bulk ? lines : undefined,
@@ -154,6 +167,7 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
         contentType: type,
         brand: brand || undefined,
         country: country.trim() || undefined,
+        signing,
       });
       const parts = [`${r.added} salvat(e) în Neon ✅`];
       if (r.duplicates?.length) parts.push(`${r.duplicates.length} duplicate ignorate`);
@@ -251,7 +265,7 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
                   <>
                     ✓ {detectedCount}/{lines.length} sursă/e detectată/e
                     {lines.length === 1 && detected && (
-                      <> • <b>{detected.providerLabel}</b> • redare: {detected.kind === "iframe" ? "iframe embed" : detected.kind === "video" ? "player nativ" : detected.kind === "hls" ? "HLS adaptiv" : detected.kind === "dash" ? "DASH adaptiv" : detected.kind === "html" ? "embed sandboxat" : "iframe generic"}</>
+                      <> • <b>{detected.providerLabel}</b> • redare: {detected.kind === "iframe" ? "iframe embed" : detected.kind === "video" ? "player nativ" : detected.kind === "hls" ? "HLS adaptiv" : detected.kind === "dash" ? "DASH adaptiv" : detected.kind === "ts" ? "MPEG-TS (mpegts.js)" : detected.kind === "unplayable" ? `protocol ${detected.protocol.toUpperCase()} — player extern (VLC)` : detected.kind === "html" ? "embed sandboxat" : "iframe generic"}</>
                     )}
                     {lines.length > 1 && <span className="text-emerald-400/70">— mod BULK</span>}
                   </>
@@ -325,6 +339,65 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
               />
             </div>
 
+            {/* ---------- FAZA 10: ACCES SECURIZAT (token/HMAC/JWT) ---------- */}
+            {lines.length <= 1 && (
+              <details className="rounded-lg border border-zinc-800 bg-zinc-900/60" open={secOn}>
+                <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-xs font-bold text-zinc-300">
+                  <span>🔐 Acces securizat (token / HMAC / JWT)</span>
+                  <button
+                    type="button"
+                    aria-label="Comută semnarea"
+                    onClick={(e) => { e.preventDefault(); setSecOn((v) => !v); }}
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${secOn ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400"}`}
+                  >
+                    {secOn ? "ACTIV" : "OFF"}
+                  </button>
+                </summary>
+                {secOn && (
+                  <div className="space-y-2 px-3 pb-3">
+                    <p className="text-[11px] leading-relaxed text-zinc-500">
+                      Pentru streamuri directe protejate (MP4/HLS/DASH/MPEG-TS). Secretul se salvează
+                      în Neon și NU ajunge niciodată în browser — la redare, serverul semnează URL-ul.
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <select
+                        value={secType}
+                        onChange={(e) => setSecType(e.target.value)}
+                        aria-label="Schema de semnare"
+                        className="h-9 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-200"
+                      >
+                        <option value="query">Query token (?token=secret)</option>
+                        <option value="hmac-md5">HMAC-MD5 (Wowza/Flussonic)</option>
+                        <option value="hmac-sha256">HMAC-SHA256</option>
+                        <option value="jwt">JWT HS256</option>
+                      </select>
+                      <Input
+                        value={secParam}
+                        onChange={(e) => setSecParam(e.target.value)}
+                        placeholder="Parametru (token / st / auth)"
+                        className="h-9 border-zinc-800 bg-zinc-950 text-xs"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Input
+                        type="password"
+                        value={secSecret}
+                        onChange={(e) => setSecSecret(e.target.value)}
+                        placeholder="Secret (min. 4 caractere)"
+                        className="h-9 border-zinc-800 bg-zinc-950 text-xs"
+                      />
+                      <Input
+                        value={secTtl}
+                        onChange={(e) => setSecTtl(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        placeholder="TTL secunde (300)"
+                        className="h-9 border-zinc-800 bg-zinc-950 text-xs"
+                      />
+                    </div>
+                  </div>
+                )}
+              </details>
+            )}
+
             <div className="flex gap-2">
               <button
                 onClick={save}
@@ -346,7 +419,8 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
             </div>
             <p className="text-[11px] text-zinc-600">
               Sfat: orice sursă web poate fi redată — providerii necunoscuți primesc iframe generic cu
-              fallback extern. Aceleași linkuri adăugate repetat nu se dublează (idempotent).
+              fallback extern. MPEG-TS (.ts) se redă prin mpegts.js; SRT/RTMP/UDP primesc instrucțiuni
+              de restream + copiere URL. Aceleași linkuri adăugate repetat nu se dublează (idempotent).
             </p>
           </>
         ) : (

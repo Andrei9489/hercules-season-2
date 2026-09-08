@@ -84,6 +84,7 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
     embedCode: l.embedCode,
     provider: l.provider,
     neonId: l.id,
+    signed: Boolean((l as { signed?: boolean }).signed),
   });
 
   const playLibrary = (l: LibraryItem) => onPlay(libToMedia(l));
@@ -193,7 +194,7 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
               const m: MediaItem = {
                 id: String(r.id), mediaType: "neon", title: r.title, poster: r.thumbnail,
                 backdrop: r.backdrop, overview: r.description, year: r.year ? String(r.year) : "",
-                rating: r.rating, source: "neon", neonId: r.id,
+                rating: r.rating, source: "neon", neonId: r.id, signed: Boolean((r as { signed?: boolean }).signed),
               };
               return (
                 <div key={`rec-${r.id}`} className="w-36 shrink-0 sm:w-40 lg:w-44" data-ai-click>

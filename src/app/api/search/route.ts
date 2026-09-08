@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 import { searchLibrary, suggest, trending, logSearch } from "@/lib/neon-search";
-import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
+import { rateLimit, rateLimitTiered, clientIp, tooMany } from "@/lib/rate-limit";
 
 const TMDB_KEY = process.env.TMDB_API_KEY || "3dd880e229e7b83d8e63c4b6f08f77a4";
 
@@ -52,13 +52,16 @@ export async function GET(req: NextRequest) {
   const limit = Math.min(48, Number(sp.get("limit")) || 24);
   const t0 = Date.now();
 
-  // ---- Faza 3: rate limiting per IP (token bucket) — protecție Neon ----
+  // ---- Faza 3+10: rate limiting pe NIVELURI (autentificat > anonim) ----
+  // Utilizatorii autentificați (cookie sesiune prezent) primesc 2.5x buget —
+  // abuzatorii anonimi sunt limitați mai agresiv, utilizatorii reali nu.
   const ip = clientIp(req);
-  // autocompletarea are buget propriu, generos (tastele rapid = multe cereri)
-  const rl = rateLimit(mode === "suggest" ? `sug:${ip}` : `srch:${ip}`, {
-    burst: mode === "suggest" ? 120 : 40,
-    perMinute: mode === "suggest" ? 600 : 300,
-  });
+  const rl = rateLimitTiered(
+    req,
+    mode === "suggest" ? `sug:${ip}` : `srch:${ip}`,
+    { burst: mode === "suggest" ? 120 : 40, perMinute: mode === "suggest" ? 600 : 300 },
+    { burst: mode === "suggest" ? 300 : 100, perMinute: mode === "suggest" ? 1500 : 750 }
+  );
   if (!rl.ok) return tooMany(rl);
 
   // ---- mode=suggest: autocompletare (titluri Neon + trending)

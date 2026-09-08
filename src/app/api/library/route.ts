@@ -5,8 +5,10 @@ import { authOptions } from "@/lib/auth";
 import { searchLibrary, insertContent, recordPlayback, normalizeRo, invalidateSearchCache } from "@/lib/neon-search";
 import { q, qOne } from "@/lib/pg";
 import { resolveSource, titleFromUrl } from "@/lib/source-resolver";
+import { parseSigningConfig } from "@/lib/stream-sign";
 import { parseM3U, normalizeM3UInputUrl, type M3UChannel } from "@/lib/m3u-parser";
 import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
+import { withCache } from "@/lib/http-cache";
 
 type Item = Record<string, unknown>;
 
@@ -83,7 +85,7 @@ export async function GET(req: NextRequest) {
       const rows = await q<Item>(
         `SELECT id, external_id, title, original_title, description, content_type, brand, category,
                 continent, country, provider, source_type, source_url, embed_code, thumbnail, backdrop,
-                year, rating, popularity, views, 0 AS score
+                year, rating, popularity, views, (meta ? 'signing') AS signed, 0 AS score
          FROM content WHERE ${where}
          ORDER BY popularity DESC, id DESC LIMIT $${params.length} OFFSET $${params.length + 1}`,
         [...params, offset]
@@ -102,12 +104,12 @@ export async function GET(req: NextRequest) {
       ).catch(() => [])
     : [];
 
-  return NextResponse.json({
+  return withCache(req, {
     items: hits.map(toApiItem),
     total: Number(total?.n || 0),
     tookMs,
     facets: facets.map((f) => ({ type: f.content_type, count: f.n })),
-  });
+  }, { sMaxage: 15, swr: 60 });
 }
 
 type LibRow = {
@@ -115,7 +117,7 @@ type LibRow = {
   contentType: string; brand: string | null; category: string | null; continent: string | null;
   country: string | null; provider: string; sourceType: string; sourceUrl: string | null;
   embedCode: string | null; thumbnail: string | null; backdrop: string | null; year: number | null;
-  rating: number; popularity: number; views: number; score: number;
+  rating: number; popularity: number; views: number; score: number; signed: boolean;
 };
 
 function rowToHit(r: Record<string, unknown>): LibRow {
@@ -141,6 +143,7 @@ function rowToHit(r: Record<string, unknown>): LibRow {
     popularity: Number(r.popularity) || 0,
     views: Number(r.views) || 0,
     score: Number(r.score) || 0,
+    signed: Boolean(r.signed),
   };
 }
 
@@ -151,6 +154,7 @@ function toApiItem(h: LibRow) {
     continent: h.continent, country: h.country, provider: h.provider, sourceType: h.sourceType,
     sourceUrl: h.sourceUrl, embedCode: h.embedCode, thumbnail: h.thumbnail, backdrop: h.backdrop,
     year: h.year, rating: h.rating, popularity: h.popularity, views: h.views,
+    signed: h.signed,
   };
 }
 
@@ -195,6 +199,8 @@ export async function POST(req: NextRequest) {
     const year = body.year ? Number(body.year) : null;
     const posterUrl = body.posterUrl ? String(body.posterUrl) : null;
     const description = body.description ? String(body.description) : "";
+    // Faza 10 — configurație semnare stream (token/HMAC/JWT), validată server-side
+    const signing = parseSigningConfig(body.signing);
     const genres: string[] = Array.isArray(body.genres)
       ? (body.genres as unknown[]).map(String).filter(Boolean)
       : typeof body.genres === "string"
@@ -253,7 +259,11 @@ export async function POST(req: NextRequest) {
         thumbnail: thumb,
         year,
         tags: genres.length ? genres : ["adaugat", resolved.provider],
-        meta: { resolved: resolved.provider, kind: resolved.kind, oembed: oembed ? "hit" : "miss" },
+        meta: {
+          resolved: resolved.provider, kind: resolved.kind, oembed: oembed ? "hit" : "miss",
+          // Faza 10 — configurație semnare server-side (secretul nu pleacă în browser)
+          ...(signing ? { signing } : {}),
+        },
         createdBy: userId,
       }).catch((e) => {
         console.error("library add:", e);
@@ -265,7 +275,13 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({
-      items: sessionSaved.map((x) => x && toApiItem(x as unknown as LibRow)).filter(Boolean),
+      items: sessionSaved
+        .map((x) =>
+          x
+            ? { ...toApiItem(x as unknown as LibRow), signed: Boolean(signing) }
+            : x
+        )
+        .filter(Boolean),
       added: sessionSaved.length,
       duplicates,
       failed,

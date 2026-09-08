@@ -7,6 +7,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { q, qRead } from "@/lib/pg";
 import { normalizeRo } from "@/lib/neon-search";
+import { withCache } from "@/lib/http-cache";
+import { cacheGet, cacheSet, cacheGetStale } from "@/lib/cache";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +47,8 @@ export async function GET(req: NextRequest) {
   const search = (sp.get("q") || "").trim();
   const sort = SORTS[(sp.get("sort") || "popularity")] || SORTS.popularity;
   const offset = (page - 1) * size;
+  // Faza 10 — cheie L1 per combinație de filtre (cache in-memory per instanță)
+  const l1Key = `browse:${type || "all"}|${brand}|${taxKind}|${slug}|${search}|${sort}|${page}`;
 
   const where: string[] = ["TRUE"];
   const params: unknown[] = [];
@@ -77,11 +81,17 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    // Faza 10 — L1 hit (20s): paginile Home/bibliotecă cerute repetat
+    // de mulți utilizatori NU mai ating origin-ul deloc
+    const l1 = cacheGet<Record<string, unknown>>(l1Key);
+    if (l1) return withCache(req, l1, { sMaxage: 30, swr: 120 });
+
     const whereSql = where.join(" AND ");
     const itemsRows = await qRead<Row>(
       `SELECT c.id, c.external_id, c.title, c.description, c.content_type, c.brand, c.category,
               c.continent, c.country, c.provider, c.source_type, c.source_url, c.embed_code,
-              c.thumbnail, c.backdrop, c.year, c.rating, c.popularity, c.views
+              c.thumbnail, c.backdrop, c.year, c.rating, c.popularity, c.views,
+              (c.meta ? 'signing') AS signed
        FROM content c ${joinTax}
        WHERE ${whereSql}
        ORDER BY ${sort}
@@ -111,7 +121,9 @@ export async function GET(req: NextRequest) {
       pageGenres = gRows.map((r) => ({ name: String(r.name), slug: String(r.slug), kind: String(r.kind) }));
     }
 
-    return NextResponse.json({
+    // Faza 10 — cache edge/CDN (s-maxage) + ETag/304: utilizatorii din vârf
+    // se servesc de la edge fără să atingă origin-ul (țintă 10 mil. simultan)
+    const payload = {
       items: itemsRows.map((r) => ({
         id: Number(r.id),
         externalId: String(r.external_id),
@@ -132,6 +144,7 @@ export async function GET(req: NextRequest) {
         rating: Number(r.rating || 0),
         popularity: Number(r.popularity || 0),
         views: Number(r.views || 0),
+        signed: Boolean(r.signed),
       })),
       page,
       size,
@@ -140,8 +153,15 @@ export async function GET(req: NextRequest) {
       hasNext: page < totalPages,
       hasPrev: page > 1,
       pageGenres,
-    });
+    };
+    cacheSet(l1Key, payload, 20);
+    return withCache(req, payload, { sMaxage: 30, swr: 120 });
   } catch (e) {
+    // Faza 10 — STALE-WHILE-ERROR: la overload (admission control), DB lent
+    // sau circuit breaker deschis, servim pagina din cache L1 chiar expirată —
+    // utilizatorul NU vede eroare (aceeași garanție ca la căutare, Faza 9)
+    const stale = cacheGetStale<Record<string, unknown>>(l1Key);
+    if (stale) return withCache(req, stale, { sMaxage: 30, swr: 120 });
     return NextResponse.json({ error: "db", message: String(e) }, { status: 500 });
   }
 }
