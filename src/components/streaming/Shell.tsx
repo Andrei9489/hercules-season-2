@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSession, signOut, signIn } from "next-auth/react";
 import {
   Home, Film, Tv, Sparkles, Music2, Baby, Trophy, Gamepad2,
-  Globe2, Heart, Newspaper, Laugh, Bookmark, Search, Menu, X, LogIn, LogOut, User, Radio,
+  Globe2, Heart, Newspaper, Laugh, Bookmark, Search, Menu, X, LogIn, LogOut, User, Radio, PlusCircle,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -16,19 +16,10 @@ import { toast } from "@/hooks/use-toast";
 import type { MediaItem, ViewKey, UserItem } from "./types";
 import { api } from "./api";
 import { HomeView } from "./HomeView";
-import { CatalogView } from "./CatalogView";
-import { AnimeView } from "./AnimeView";
-import { MusicView } from "./MusicView";
-import { KidsView } from "./KidsView";
-import { SportsView } from "./SportsView";
-import { GamingView } from "./GamingView";
-import { NewsView } from "./NewsView";
-import { FunView } from "./FunView";
+import { LibraryView } from "./LibraryView";
 import { MyListView } from "./MyListView";
 import { SearchView } from "./SearchView";
-import { UniversuriView } from "./UniversuriView";
-import { ShowbizView } from "./ShowbizView";
-import { RadioView } from "./RadioView";
+import { LibraryAddDialog } from "./LibraryAddDialog";
 import { DetailModal } from "./DetailModal";
 import { PlayerModal } from "./PlayerModal";
 import { AICursor } from "./AICursor";
@@ -110,6 +101,8 @@ export function Shell() {
   const [newProfile, setNewProfile] = useState({ name: "", avatar: "🎬" });
   const [loginDialogOpen, setLoginDialogOpen] = useState(false);
   const [loginEmail, setLoginEmail] = useState("");
+  // Faza 8: dialog global de încărcare conținut (accesibil din toate meniurile)
+  const [addOpen, setAddOpen] = useState(false);
 
   // încarcă watchlist + favorite
   useEffect(() => {
@@ -379,6 +372,15 @@ export function Shell() {
             <Menu className="h-5 w-5" />
           </button>
 
+          {/* Faza 8: buton global de încărcare conținut */}
+          <button
+            aria-label="Adaugă conținut"
+            onClick={() => setAddOpen(true)}
+            className="hidden h-9 shrink-0 items-center gap-1.5 rounded-full bg-red-600 px-3.5 text-xs font-bold text-white transition hover:bg-red-500 sm:flex"
+          >
+            <PlusCircle className="h-4 w-4" /> Adaugă
+          </button>
+
           <form onSubmit={submitSearch} className="relative max-w-md flex-1">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
             <Input
@@ -539,34 +541,62 @@ export function Shell() {
           />
         )}
         {view === "filme" && (
-          <CatalogView kind="filme" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+          <LibraryView key="filme" title="Filme" emoji="🎬" description="Filmele tale din Neon — adăugate prin URL / iframe / embed / JS."
+            type="movie" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "seriale" && (
-          <CatalogView kind="seriale" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+          <LibraryView key="seriale" title="Seriale" emoji="📺" description="Serialele tale din Neon — adăugate prin URL / iframe / embed / JS."
+            type="series" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "documentare" && (
-          <CatalogView kind="documentare" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+          <LibraryView key="documentare" title="Documentare" emoji="🌍" description="Documentarele tale din Neon."
+            type="documentary" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "telenovele" && (
-          <CatalogView kind="telenovele" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+          <LibraryView key="telenovele" title="Telenovele" emoji="🌹" description="Telenovelele tale din Neon."
+            type="telenovela" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "anime" && (
-          <AnimeView onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+          <LibraryView key="anime" title="Anime" emoji="🌸" description="Animele tale din Neon."
+            type="anime" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
-        {view === "muzica" && <MusicView />}
+        {view === "muzica" && (
+          <LibraryView key="muzica" title="Muzică" emoji="🎵" description="Videoclipuri și muzică din biblioteca ta."
+            type="music" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+        )}
         {view === "copii" && (
-          <KidsView key={`kids-${kidsBrand}`} initialBrand={kidsBrand} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+          <LibraryView key={`copii-${kidsBrand}`} title="Copii & Desene" emoji="🧸" description="Desene animate și conținut pentru copii — filtru pe universuri."
+            brands={[["disney", "🏰 Disney"], ["pixar", "💡 Pixar"], ["cartoon-network", "📺 Cartoon Network"], ["jetix", "⚡ Jetix"], ["fox-kids", "🦊 Fox Kids"], ["boomerang", "🪃 Boomerang"], ["minimax", "🎈 Minimax"], ["ghibli", "🌀 Ghibli"]]}
+            brand={kidsBrand} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
-        {view === "sport" && <SportsView />}
-        {view === "gaming" && <GamingView />}
-        {view === "stiri" && <NewsView key={`stiri-${newsContinent}`} initialContinent={newsContinent} />}
-        {view === "radio" && <RadioView />}
-        {view === "fun" && <FunView />}
+        {view === "sport" && (
+          <LibraryView key="sport" title="Sport" emoji="🏆" description="Meciuri și evenimente sportive din biblioteca ta."
+            type="sport" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+        )}
+        {view === "gaming" && (
+          <LibraryView key="gaming" title="Gaming" emoji="🎮" description="Gameplay, turnee și streaming gaming."
+            type="gaming" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+        )}
+        {view === "stiri" && (
+          <LibraryView key="stiri" title="Știri" emoji="📰" description="Canale de știri și jurnale din întreaga lume."
+            type="news" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+        )}
+        {view === "radio" && (
+          <LibraryView key="radio" title="Radio Live" emoji="📻" description="Posturi de radio adăugate de tine."
+            type="radio" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+        )}
+        {view === "fun" && (
+          <LibraryView key="fun" title="Distracție" emoji="😄" description="Videoclipuri de divertisment din biblioteca ta."
+            type="video" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+        )}
         {view === "universuri" && (
-          <UniversuriView key={`uni-${universuriTab}`} initialTab={universuriTab} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+          <LibraryView key={`uni-${universuriTab}`} title="Universuri" emoji="🦸" description="Colecții pe brand: Marvel, DC, blockbustere — filtru pe univers."
+            brands={[["marvel", "🦸 Marvel"], ["dc", "🦇 DC"], ["blockbuster", "💥 Blockbustere"]]}
+            brand={universuriTab} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "showbiz" && (
-          <ShowbizView key={`sb-${showbizTab}`} initialTab={showbizTab} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} />
+          <LibraryView key={`sb-${showbizTab}`} title="TV & Show-biz" emoji="⭐" description="Emisiuni, reality TV și divertisment."
+            type="showbiz" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "lista" && (
           <MyListView
@@ -589,11 +619,12 @@ export function Shell() {
       <footer className="mt-auto border-t border-zinc-900 bg-[#0c0c12] py-5 lg:pl-60">
         <div className="px-4 text-center sm:px-6">
           <p className="text-xs text-zinc-500">
-            <span className="font-black text-zinc-300">StreamVerse</span> — platformă demonstrativă de streaming universal.
-            Metadata & trailere: <span className="text-zinc-400">TMDB, MyAnimeList, TVMaze, iTunes, YouTube, OpenSubtitles</span>.
+            <span className="font-black text-zinc-300">StreamVerse</span> — platforma ta de streaming universal.
+            Conținut încărcat 100% de tine prin <span className="text-zinc-400">URL • iframe • embed • JavaScript</span> din orice sursă,
+            stocat exclusiv în <span className="text-zinc-400">Neon Cloud</span>.
           </p>
           <p className="mt-1 text-[11px] text-zinc-600">
-            Filme • Seriale • Anime • Muzică • Copii • Sport • Gaming • Documentare • Telenovele • Știri — din 6 continente și 196 de țări 🌍
+            Capacitate: 30.000.000.000 conținuturi • 10.000 căutări simultane • 10.000.000 utilizatori simultani — 6 continente, 196 de țări 🌍
           </p>
         </div>
       </footer>
@@ -611,6 +642,13 @@ export function Shell() {
         item={playerItem} open={playerOpen}
         onClose={() => setPlayerOpen(false)}
         authed={authedStable}
+      />
+
+      {/* Faza 8: STUDIO DE ÎNCĂRCARE UNIVERSAL — dialog global */}
+      <LibraryAddDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onAdded={() => setRefreshKey((k) => k + 1)}
       />
 
       {/* Faza 7: CURSOR AI AUTOMAT — comutator ON/OFF global */}

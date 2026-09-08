@@ -26,6 +26,7 @@ export async function GET(req: NextRequest) {
   const page = Math.max(1, Number(sp.get("page")) || 1);
   const size = Math.min(20, Math.max(20, Number(sp.get("size")) || 20)); // FIX: 20 postere
   const type = (sp.get("type") || "").trim();
+  const brand = (sp.get("brand") || "").trim();
   const taxKind = (sp.get("tax") || "").trim();
   const slug = (sp.get("slug") || "").trim();
   const search = (sp.get("q") || "").trim();
@@ -35,6 +36,7 @@ export async function GET(req: NextRequest) {
   const where: string[] = ["TRUE"];
   const params: unknown[] = [];
   if (type) { params.push(type); where.push(`c.content_type = $${params.length}`); }
+  if (brand) { params.push(brand); where.push(`c.brand = $${params.length}`); }
   if (search) { params.push(`%${search}%`); where.push(`c.search_text LIKE $${params.length}`); }
   let joinTax = "";
   if (taxKind && slug) {

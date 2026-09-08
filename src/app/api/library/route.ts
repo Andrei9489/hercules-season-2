@@ -7,6 +7,52 @@ import { resolveSource, titleFromUrl } from "@/lib/source-resolver";
 
 type Item = Record<string, unknown>;
 
+// ---------- METADATE oEmbed REALE (fără chei, endpoint-uri publice) ----------
+// Pentru linkurile încărcate de utilizator din platforme mari, titlul și
+// miniatura REALĂ se extrag server-side la salvare — nu ghicim, nu simulăm.
+const OEMBED: { re: RegExp; url: (m: RegExpMatchArray) => string; provider: string }[] = [
+  {
+    re: /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([\w-]{6,})/i,
+    url: (m) => `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${m[1]}`)}&format=json`,
+    provider: "youtube",
+  },
+  {
+    re: /vimeo\.com\/(?:video\/)?(\d+)/i,
+    url: (m) => `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(`https://vimeo.com/${m[1]}`)}`,
+    provider: "vimeo",
+  },
+  {
+    re: /(?:dailymotion\.com\/(?:video\/|embed\/video\/)|dai\.ly\/)([a-z0-9]+)/i,
+    url: (m) => `https://www.dailymotion.com/services/oembed?url=${encodeURIComponent(`https://www.dailymotion.com/video/${m[1]}`)}&format=json`,
+    provider: "dailymotion",
+  },
+];
+
+async function fetchOEmbed(sourceUrl: string): Promise<{ title?: string; thumbnail?: string } | null> {
+  for (const o of OEMBED) {
+    const m = sourceUrl.match(o.re);
+    if (!m) continue;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 5000);
+      const res = await fetch(o.url(m), { signal: ctrl.signal, cache: "no-store" });
+      clearTimeout(t);
+      if (!res.ok) return null;
+      const j = (await res.json()) as { title?: string; thumbnail_url?: string };
+      return { title: j.title || undefined, thumbnail: j.thumbnail_url || undefined };
+    } catch {
+      return null; // sandbox/offline — salvăm oricum, cu metadatele userului
+    }
+  }
+  return null;
+}
+
+/** Miniatură reală YouTube (fallback rapid, fără rețea). */
+function ytThumb(input: string): string | null {
+  const m = /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([\w-]{6,})/i.exec(input);
+  return m ? `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg` : null;
+}
+
 /** GET /api/library?limit=18&offset=0&type=movie&brand=marvel&q=... */
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
@@ -123,59 +169,104 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ resolved });
   }
 
-  // ---------- ADD: salvare în Neon ----------
+  // ---------- ADD: salvare în Neon (singular sau BULK) ----------
   if (action === "add") {
-    const input = String(body.input || "").trim();
-    if (!input) return NextResponse.json({ error: "empty" }, { status: 400 });
+    const session = await getServerSession(authOptions).catch(() => null);
+    const userId = session?.user?.email || null;
 
-    const resolved = resolveSource(input, { parent: req.headers.get("host") || "" });
-    if (!resolved) return NextResponse.json({ error: "invalid-source" }, { status: 400 });
-
-    const refUrl = resolved.kind === "html" ? "https://embed.local" : ((resolved as { src?: string; url?: string }).src || (resolved as { url?: string }).url || "");
-    const title = String(body.title || "").trim() || titleFromUrl(refUrl === "https://embed.local" ? "Embed personalizat" : refUrl);
-    if (!title) return NextResponse.json({ error: "no-title" }, { status: 400 });
+    // BULK: un element pe linie (URL / iframe / embed) + metadate comune
+    const bulkRaw = Array.isArray(body.items) ? (body.items as unknown[]) : null;
+    const entries: { input: string; title?: string }[] = bulkRaw
+      ? bulkRaw.map((x) =>
+          typeof x === "string"
+            ? { input: String(x) }
+            : { input: String((x as { input?: string }).input || ""), title: (x as { title?: string }).title }
+        ).filter((e) => e.input.trim())
+      : [{ input: String(body.input || ""), title: body.title ? String(body.title) : undefined }];
+    if (entries.length === 0) return NextResponse.json({ error: "empty" }, { status: 400 });
 
     const contentType = String(body.contentType || "video");
     const brand = body.brand ? String(body.brand) : null;
     const country = body.country ? String(body.country) : null;
+    const language = body.language ? String(body.language) : "en";
+    const year = body.year ? Number(body.year) : null;
+    const posterUrl = body.posterUrl ? String(body.posterUrl) : null;
+    const description = body.description ? String(body.description) : "";
+    const genres: string[] = Array.isArray(body.genres)
+      ? (body.genres as unknown[]).map(String).filter(Boolean)
+      : typeof body.genres === "string"
+        ? String(body.genres).split(",").map((g) => g.trim()).filter(Boolean)
+        : [];
 
-    // thumbnail automat pentru YouTube
-    let thumb: string | null = null;
-    const ytId = /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/)|youtu\.be\/)([\w-]{6,})/i.exec(
-      (resolved as { src?: string }).src || input
-    );
-    if (ytId) thumb = `https://i.ytimg.com/vi/${ytId[1]}/hqdefault.jpg`;
+    const sessionSaved: Awaited<ReturnType<typeof insertContent>>[] = [];
+    const duplicates: string[] = [];
+    const failed: string[] = [];
 
-    const session = await getServerSession(authOptions).catch(() => null);
-    const userId = session?.user?.email || null;
+    for (const entry of entries.slice(0, 50)) { // max 50/batch — protejează pool-ul
+      const input = entry.input.trim();
+      const resolved = resolveSource(input, { parent: req.headers.get("host") || "" });
+      if (!resolved) { failed.push(input.slice(0, 80)); continue; }
 
-    const hashSrc = normalizeRo(`${title}|${input}`).replace(/\s/g, "").slice(0, 60);
-    const extId = `user:${hashSrc}:${Date.now().toString(36)}`;
+      const refUrl =
+        resolved.kind === "html"
+          ? ""
+          : (resolved as { src?: string; url?: string }).src ||
+            (resolved as { url?: string }).url || "";
 
-    const inserted = await insertContent({
-      externalId: extId,
-      title,
-      description: String(body.description || `Conținut adăugat de utilizator — ${resolved.providerLabel}.`),
-      contentType,
-      brand,
-      category: contentType,
-      country,
-      provider: resolved.provider,
-      sourceType: resolved.kind === "html" ? "embed" : resolved.kind,
-      sourceUrl: (resolved as { src?: string; url?: string }).src || (resolved.kind === "unknown" ? resolved.url : null),
-      embedCode: resolved.kind === "html" ? resolved.html : String(body.embedCode || "") || null,
-      thumbnail: thumb,
-      year: body.year ? Number(body.year) : null,
-      tags: ["adaugat", resolved.provider],
-      meta: { resolved: resolved.provider, kind: resolved.kind },
-      createdBy: userId,
-    }).catch((e) => {
-      console.error("library add:", e);
-      return null;
+      // IDEMPOTENT: hash pe sursa normalizată (fără timestamp) →
+      // același link adăugat de 2 ori NU se dublează în bibliotecă.
+      const normSource = normalizeRo(`${refUrl || input}`).replace(/\s/g, "").toLowerCase();
+      const extId = `user:${normSource.slice(0, 120)}`;
+
+      // metadate reale oEmbed (titlu + miniatură) pentru platforme mari
+      const oembed = refUrl ? await fetchOEmbed(refUrl) : null;
+
+      const title =
+        String(entry.title || body.title || "").trim() ||
+        oembed?.title ||
+        (refUrl ? titleFromUrl(refUrl) : "") ||
+        "Cod embed personalizat";
+
+      const dup = await qOne<{ id: number; title: string }>(
+        `SELECT id, title FROM content WHERE external_id = $1 LIMIT 1`, [extId]
+      );
+      if (dup) { duplicates.push(dup.title); continue; }
+
+      const thumb = posterUrl || oembed?.thumbnail || ytThumb(input) || null;
+
+      const inserted = await insertContent({
+        externalId: extId,
+        title,
+        description: description || `Conținut încărcat de utilizator — ${resolved.providerLabel}.`,
+        contentType,
+        brand,
+        category: contentType,
+        country,
+        language,
+        provider: resolved.provider,
+        sourceType: resolved.kind === "html" ? "embed" : resolved.kind,
+        sourceUrl: refUrl || (resolved.kind === "unknown" ? (resolved as { url?: string }).url : null),
+        embedCode: resolved.kind === "html" ? resolved.html : null,
+        thumbnail: thumb,
+        year,
+        tags: genres.length ? genres : ["adaugat", resolved.provider],
+        meta: { resolved: resolved.provider, kind: resolved.kind, oembed: oembed ? "hit" : "miss" },
+        createdBy: userId,
+      }).catch((e) => {
+        console.error("library add:", e);
+        return null;
+      });
+
+      if (inserted) sessionSaved.push(inserted);
+      else failed.push(input.slice(0, 80));
+    }
+
+    return NextResponse.json({
+      items: sessionSaved.map((x) => x && toApiItem(x as unknown as LibRow)).filter(Boolean),
+      added: sessionSaved.length,
+      duplicates,
+      failed,
     });
-
-    if (!inserted) return NextResponse.json({ error: "insert-failed" }, { status: 500 });
-    return NextResponse.json({ item: toApiItem(inserted), resolved });
   }
 
   // ---------- PLAY_EVENT: statistici redare ----------
