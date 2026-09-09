@@ -1,0 +1,847 @@
+     1→// ============================================================
+     2→// Motor de căutare StreamVerse — strat Neon (Faza 6)
+     3→// Arhitectură: FTS (tsvector GIN) + trigram (pg_trgm GIN) pe tabel
+     4→// partiționat HASH x16, ranking hibrid, cache L2 DISTRIBUIT în Neon
+     5→// (partajat cross-instance) PENTRU REZULTATE + SUGESTII + TRENDING,
+     6→// index covering pentru autocompletare (index-only scans), ROLLUP
+     7→// pre-agregat pentru ranking pe POPULARITATE la prefixe scurte,
+     8→// router READ/WRITE (pool RO replica-ready), cache LRU la cald,
+     9→// logging asincron în search_logs + search_stats.
+    10→// Țintă finală: 30 miliarde itemi • 10.000 căutări simultane.
+    11→// ============================================================
+    12→import { q, qOne, qRead, AdmissionRejected, DbUnavailable } from "./pg";
+    13→import { qReadRegion } from "./regions";
+    14→import { invalidateGlobalRecommendations } from "./recommendations";
+    15→import {
+    16→  getActiveShards,
+    17→  execOnAllShards,
+    18→  pickShardFor,
+    19→  shardQuery,
+    20→  shardMapUpsert,
+    21→  shardMapLookup,
+    22→  type Shard,
+    23→} from "./shards";
+    24→
+    25→/** Normalizează text RO/EN: fără diacritice, lowercase, doar [a-z0-9 spații]. */
+    26→export function normalizeRo(s: string): string {
+    27→  return s
+    28→    .normalize("NFD")
+    29→    .replace(/[\u0300-\u036f]/g, "")
+    30→    .toLowerCase()
+    31→    .replace(/[^a-z0-9\s]/g, " ")
+    32→    .replace(/\s+/g, " ")
+    33→    .trim();
+    34→}
+    35→
+    36→export type LibraryHit = {
+    37→  id: number;
+    38→  externalId: string;
+    39→  title: string;
+    40→  originalTitle: string | null;
+    41→  description: string;
+    42→  contentType: string;
+    43→  brand: string | null;
+    44→  category: string | null;
+    45→  continent: string | null;
+    46→  country: string | null;
+    47→  provider: string;
+    48→  sourceType: string;
+    49→  sourceUrl: string | null;
+    50→  embedCode: string | null;
+    51→  thumbnail: string | null;
+    52→  backdrop: string | null;
+    53→  year: number | null;
+    54→  rating: number;
+    55→  popularity: number;
+    56→  views: number;
+    57→  score: number;
+    58→};
+    59→
+    60→// ---------- Cache L2 DISTRIBUIT în Neon (Faza 4) ----------
+    61→// L1 = memorie per-instanță (implicit, sub-ms) → L2 = tabel Neon shared
+    62→// (~15-40ms, partajat între TOATE instanțele) → origin (FTS+trigram).
+    63→// La scale orizontal (N instanțe) hit-rate-ul L2 crește proporțional —
+    64→// load pe compute-ul Neon scade cu numărul de instanțe.
+    65→const L2_TTL_SEC = 90;
+    66→const L2_TTL_SUG_SEC = 300;  // Faza 5: sugestiile se schimbă rar (invalidare la ingest)
+    67→const L2_TTL_TREND_SEC = 120;
+    68→
+    69→async function l2Get<T>(key: string, ttlSec: number = L2_TTL_SEC): Promise<T | null> {
+    70→  try {
+    71→    const rows = await qRead<{ payload: unknown }>(
+    72→      `SELECT payload FROM search_cache
+    73→       WHERE key = $1 AND created_at > now() - ($2 || ' seconds')::interval`,
+    74→      [key, String(ttlSec)]
+    75→    );
+    76→    if (!rows[0]) return null;
+    77→    return JSON.parse(JSON.stringify(rows[0].payload)) as T;
+    78→  } catch {
+    79→    return null; // L2 e optim — o eroare NU blochează căutarea
+    80→  }
+    81→}
+    82→
+    83→async function l2Set(key: string, data: unknown): Promise<void> {
+    84→  try {
+    85→    await q(
+    86→      `INSERT INTO search_cache (key, payload) VALUES ($1, $2::jsonb)
+    87→       ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, created_at = now()`,
+    88→      [key, JSON.stringify(data)]
+    89→    );
+    90→  } catch { /* optim — ignoră */ }
+    91→}
+    92→
+    93→// cleanup probabilistic: 2% din scrieri declanșează ștergerea intrărilor expirate
+    94→function l2CleanupMaybe(): void {
+    95→  if (Math.random() > 0.02) return;
+    96→  q(`DELETE FROM search_cache WHERE created_at < now() - interval '10 minutes'`)
+    97→    .catch(() => { /* optim */ });
+    98→}
+    99→
+   100→// ---------- Cache LRU la cald L1 (protecție Neon la vârfuri) ----------
+   101→// Faza 2: TTL mai lung + cache mai mare + coalescing cereri identice.
+   102→type CacheEntry = { exp: number; data: LibraryHit[] };
+   103→const RESULT_TTL_MS = 120_000;
+   104→const CACHE_MAX = 5_000;
+   105→const searchCache = new Map<string, CacheEntry>();
+   106→// coalescing: cererile simultane identice partajează ACEEAși promisiune
+   107→// (10.000 căutări simultane pe top-query-uri → 1 singur hit în Neon)
+   108→const inFlight = new Map<string, Promise<LibraryHit[]>>();
+   109→
+   110→function cacheGet(key: string): LibraryHit[] | null {
+   111→  const hit = searchCache.get(key);
+   112→  if (!hit) return null;
+   113→  if (Date.now() > hit.exp) {
+   114→    searchCache.delete(key);
+   115→    return null;
+   116→  }
+   117→  // LRU: repoziționează la final
+   118→  searchCache.delete(key);
+   119→  searchCache.set(key, hit);
+   120→  return hit.data;
+   121→}
+   122→
+   123→/** Faza 9: STALE-WHILE-ERROR — citește și intrări EXPIRATE din L1.
+   124→ *  Când origin/DB e picat, mai bine servim rezultate puțin vechi decât o eroare. */
+   125→function cacheGetStale(key: string): LibraryHit[] | null {
+   126→  const hit = searchCache.get(key);
+   127→  return hit ? hit.data : null;
+   128→}
+   129→
+   130→/** Faza 12: citește intrare expirată (cu touch LRU) — pentru
+   131→ *  STALE-WHILE-REVALIDATE: servim instant din stale, refresh-ul pleacă
+   132→ *  în fundal (single-flight). Sub vârfuri susținute pe aceleași query-uri,
+   133→ *  răspunsul rămâne sub-ms, iar origin-ul e lovit max 1x per TTL. */
+   134→function cacheGetStaleEntry(key: string): LibraryHit[] | null {
+   135→  const hit = searchCache.get(key);
+   136→  if (!hit) return null;
+   137→  searchCache.delete(key);
+   138→  searchCache.set(key, hit);
+   139→  return hit.data;
+   140→}
+   141→
+   142→function cacheSet(key: string, data: LibraryHit[]): void {
+   143→  if (searchCache.size >= CACHE_MAX) {
+   144→    const oldest = searchCache.keys().next().value;
+   145→    if (oldest) searchCache.delete(oldest);
+   146→  }
+   147→  searchCache.set(key, { exp: Date.now() + RESULT_TTL_MS, data });
+   148→}
+   149→
+   150→/** Invalidare la adăugarea de conținut nou (L1 + L2 distribuit).
+   151→ *  Faza 12: ridică generația cache-ului — recompute-urile de background
+   152→ *  pornite ÎNAINTE de invalidare nu mai repopulează date vechi. */
+   153→export function invalidateSearchCache(prefix?: string): void {
+   154→  cacheGeneration++;
+   155→  if (!prefix) {
+   156→    searchCache.clear();
+   157→    inFlight.clear();
+   158→    sugCache.clear();
+   159→    q(`DELETE FROM search_cache`).catch(() => { /* optim */ });
+   160→    return;
+   161→  }
+   162→  // Faza 5: invalidarea L2 acoperă și sugestiile/trending (prefixe 'sug:'/'trend:')
+   163→  for (const k of searchCache.keys()) {
+   164→    if (k.startsWith(prefix)) searchCache.delete(k);
+   165→  }
+   166→  for (const k of sugCache.keys()) {
+   167→    if (k.startsWith("sug:")) sugCache.delete(k);
+   168→  }
+   169→  if (prefix.startsWith("sl:")) {
+   170→    // L2: șterge cache-urile de căutare + sugestii + trending (PK range scan, ieftin)
+   171→    q(`DELETE FROM search_cache WHERE key LIKE 'sl:%' OR key LIKE 'sug:%' OR key LIKE 'trend:%'`)
+   172→      .catch(() => { /* optim */ });
+   173→  }
+   174→}
+   175→
+   176→// ---------- Căutare FTS + trigram (index-driven, fără seq scan) ----------
+   177→type SearchOpts = { limit?: number; offset?: number; type?: string; brand?: string; region?: string };
+   178→
+   179→// Faza 12: generația cache-ului — invalidările incrementează; recompute-urile
+   180→// de background captură generația la start și NU mai scrie în cache dacă s-a
+   181→// schimbat între timp (previne repopularea cu date de pre-ingest).
+   182→let cacheGeneration = 0;
+   183→
+   184→/**
+   185→ * Faza 12: re-materializare completă pentru o cheie de căutare
+   186→ * (L2 distribuit → origin SQL → promovare L1 + write-behind L2).
+   187→ * Folosită ATÂT de foreground (cache miss), CÂT ȘI de background
+   188→ * revalidate (intrare expirată servită stale). Nu atinge inFlight —
+   189→ * fiecare apelant își gestionează single-flight-ul.
+   190→ */
+   191→function searchRecompute(
+   192→  cacheKey: string,
+   193→  norm: string,
+   194→  limit: number,
+   195→  offset: number,
+   196→  type?: string,
+   197→  brand?: string,
+   198→  region?: string
+   199→): Promise<LibraryHit[]> {
+   200→  const gen = cacheGeneration;
+   201→  return (async (): Promise<LibraryHit[]> => {
+   202→    // Faza 4/5: L2 distribuit în Neon (partajat cross-instance)
+   203→    const l2 = await l2Get<LibraryHit[]>(cacheKey);
+   204→    if (l2 && Array.isArray(l2)) {
+   205→      const hits = l2.map((h) => ({ ...h }));
+   206→      cacheSet(cacheKey, hits); // promovează în L1
+   207→      return hits;
+   208→    }
+   209→
+   210→    const hits = await runSearchFanout(norm, limit, offset, type, brand, region);
+   211→
+   212→    // Faza 12: scriem în cache DOAR dacă între timp nu a venit o invalidare
+   213→    if (gen === cacheGeneration) {
+   214→      cacheSet(cacheKey, hits);
+   215→      void l2Set(cacheKey, hits).then(() => l2CleanupMaybe()); // L2 write-behind
+   216→    }
+   217→    return hits;
+   218→  })();
+   219→}
+   220→
+   221→/**
+   222→ * Faza 15 — EXECUȚIE DE CĂUTARE (multi-shard):
+   223→ * - 1 shard activ (implicit) → interogare directă pe primar (calea clasică)
+   224→ * - N shard-uri active → SCATTER-GATHER: interogarea rulează pe TOATE
+   225→ *   compute-urile în paralel (fiecare cu LIMIT limit+offset, OFFSET 0),
+   226→ *   rezultatele se combină global pe score și se taie fereastra cerută.
+   227→ *   Un shard picat NU blochează căutarea (toleranță parțială).
+   228→ */
+   229→async function runSearchFanout(
+   230→  norm: string,
+   231→  limit: number,
+   232→  offset: number,
+   233→  type?: string,
+   234→  brand?: string,
+   235→  region?: string
+   236→): Promise<LibraryHit[]> {
+   237→  const active = await getActiveShards().catch(() => [] as Shard[]);
+   238→  if (active.length > 1) {
+   239→    const scatter = await execOnAllShards((shard) =>
+   240→      runSearchOnShard(shard, norm, limit + offset, 0, type, brand)
+   241→    );
+   242→    if (scatter.errors.length) {
+   243→      console.warn(`[shards] căutare parțială (${scatter.answered}/${scatter.total}): ${scatter.errors.join(" | ")}`);
+   244→    }
+   245→    const merged = scatter.results.flat();
+   246→    merged.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.id - a.id);
+   247→    return merged.slice(offset, offset + limit);
+   248→  }
+   249→  // FAZA 16: citirea de origin merge pe REPLICĂ/regiunea cerută (qReadRegion)
+   250→  // — fallback transparent pe pool-ul RO când regiunea nu e activă.
+   251→  const rows = await qReadRegion<Record<string, unknown>>(region, ...buildSearchQuery(norm, limit, offset, type, brand));
+   252→  return rows.map(mapHit);
+   253→}
+   254→
+   255→/** Rulează interogarea de căutare pe UN shard specific (local sau remote). */
+   256→async function runSearchOnShard(
+   257→  shard: Shard,
+   258→  norm: string,
+   259→  limit: number,
+   260→  offset: number,
+   261→  type?: string,
+   262→  brand?: string
+   263→): Promise<LibraryHit[]> {
+   264→  const [sql, params] = buildSearchQuery(norm, limit, offset, type, brand);
+   265→  const rows = await shardQuery<Record<string, unknown>>(shard, sql, params);
+   266→  return rows.map(mapHit);
+   267→}
+   268→
+   269→/** Construiește SQL-ul de căutare FTS+trigram (identic pe toate shard-urile). */
+   270→function buildSearchQuery(
+   271→  norm: string,
+   272→  limit: number,
+   273→  offset: number,
+   274→  type?: string,
+   275→  brand?: string
+   276→): [string, unknown[]] {
+   277→  // to_tsquery cu prefix per termen: "marii pitici" -> marii:* & pitici:*
+   278→  const terms = norm.split(" ").filter(Boolean).slice(0, 8).map((t) => t.replace(/[^\w]/g, ""));
+   279→  const tsq = terms.map((t) => `${t}:*`).join(" & ");
+   280→  const prefix = norm.replace(/[^\w\s]/g, "");
+   281→
+   282→  const conditions: string[] = [];
+   283→  const params: unknown[] = [];
+   284→  let p = 0;
+   285→  const next = (v: unknown): string => {
+   286→    params.push(v);
+   287→    p++;
+   288→    return `$${p}`;
+   289→  };
+   290→
+   291→  // FIX 42P18: parametrii se alocă DOAR dacă sunt referențiați în SQL —
+   292→  // pentru prefixuri scurte (<3) pNorm nu era folosit nicăieri și Postgres
+   293→  // respicea statementul ("could not determine data type of parameter $1").
+   294→  const pTsq = next(tsq);
+   295→  const pPrefix = next(prefix + "%");
+   296→  let pSim = "";
+   297→  if (prefix.length >= 3) {
+   298→    pSim = next(norm);
+   299→    conditions.push(`search_text % ${pSim}`);
+   300→  }
+   301→  const pLike = next(`%${prefix}%`);
+   302→  conditions.push(`search_text LIKE ${pLike}`);
+   303→
+   304→  const scoreExpr = `
+   305→    (ts_rank(search_tsv, to_tsquery('simple', ${pTsq})) * 8
+   306→     ${pSim ? `+ similarity(search_text, ${pSim}) * 3` : ""}
+   307→     + CASE WHEN search_text LIKE ${pPrefix} THEN 3 ELSE 0 END
+   308→     + LEAST(popularity, 5000) / 5000.0 * 1.2)`;
+   309→
+   310→  let where = `(${conditions.join(" OR ")})`;
+   311→  if (type) where += ` AND content_type = ${next(type)}`;
+   312→  if (brand) where += ` AND brand = ${next(brand)}`;
+   313→
+   314→  const sql = `
+   315→    SELECT id, external_id, title, original_title, description, content_type, brand,
+   316→           category, continent, country, provider, source_type, source_url, embed_code,
+   317→           thumbnail, backdrop, year, rating, popularity, views, ${scoreExpr} AS score
+   318→    FROM content
+   319→    WHERE ${where}
+   320→    ORDER BY score DESC, popularity DESC, id DESC
+   321→    LIMIT ${next(limit)} OFFSET ${next(offset)}`;
+   322→  return [sql, params];
+   323→}
+   324→
+   325→/** Faza 12: kick asincron de revalidare (single-flight prin inFlight). */
+   326→function kickSearchRevalidate(
+   327→  cacheKey: string,
+   328→  norm: string,
+   329→  limit: number,
+   330→  offset: number,
+   331→  type?: string,
+   332→  brand?: string,
+   333→  region?: string
+   334→): void {
+   335→  if (inFlight.has(cacheKey)) return;
+   336→  const p = searchRecompute(cacheKey, norm, limit, offset, type, brand, region).catch(
+   337→    () => { /* stale-ul rămâne servit; circuit breaker/timeout gestionate de pg.ts */ }
+   338→  );
+   339→  inFlight.set(cacheKey, p);
+   340→  void p.finally(() => {
+   341→    if (inFlight.get(cacheKey) === p) inFlight.delete(cacheKey);
+   342→  });
+   343→}
+   344→
+   345→export async function searchLibrary(
+   346→  query: string,
+   347→  opts: SearchOpts = {}
+   348→): Promise<{ hits: LibraryHit[]; tookMs: number; cached: boolean; totalIndexed: number; degraded?: boolean; revalidating?: boolean }> {
+   349→  const t0 = Date.now();
+   350→  const { limit = 24, offset = 0, type, brand, region } = opts;
+   351→  const norm = normalizeRo(query).slice(0, 120);
+   352→
+   353→  if (!norm) {
+   354→    // Fără query — listează cele mai populare (index pe popularity DESC)
+   355→    // Faza 6: citire pe pool-ul RO (izolare de scrieri)
+   356→    let where = "TRUE";
+   357→    const params: unknown[] = [];
+   358→    if (type) {
+   359→      params.push(type);
+   360→      where += ` AND content_type = $${params.length}`;
+   361→    }
+   362→    if (brand) {
+   363→      params.push(brand);
+   364→      where += ` AND brand = $${params.length}`;
+   365→    }
+   366→    params.push(limit);
+   367→    where += ` ORDER BY popularity DESC, id DESC LIMIT $${params.length}`;
+   368→    params.push(offset);
+   369→    where += ` OFFSET $${params.length}`;
+   370→    // FAZA 16: listare populară rutată pe regiune (replică activă → replică)
+   371→    const rows = await qReadRegion<Record<string, unknown>>(region, `SELECT * FROM content WHERE ${where}`, params);
+   372→    return { hits: rows.map(mapHit), tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
+   373→  }
+   374→
+   375→  const cacheKey = `sl:${norm}:${limit}:${offset}:${type || "*"}:${brand || "*"}`;
+   376→  const cached = cacheGet(cacheKey);
+   377→  if (cached) return { hits: cached, tookMs: Date.now() - t0, cached: true, totalIndexed: 0 };
+   378→
+   379→  // Faza 12: STALE-WHILE-REVALIDATE — intrare expirată în L1 → servim
+   380→  // INSTANT din stale + re-materializare asincronă single-flight în fundal.
+   381→  const staleEntry = cacheGetStaleEntry(cacheKey);
+   382→  if (staleEntry) {
+   383→    kickSearchRevalidate(cacheKey, norm, limit, offset, type, brand, region);
+   384→    return { hits: staleEntry, tookMs: Date.now() - t0, cached: true, totalIndexed: 0, revalidating: true };
+   385→  }
+   386→
+   387→  // coalescing: dacă o cerere identică e deja în zbor, așteptăm-o
+   388→  const pending = inFlight.get(cacheKey);
+   389→  if (pending) {
+   390→    const hits = await pending;
+   391→    return { hits, tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
+   392→  }
+   393→
+   394→  const exec = searchRecompute(cacheKey, norm, limit, offset, type, brand, region);
+   395→
+   396→  inFlight.set(cacheKey, exec);
+   397→  try {
+   398→    const hits = await exec;
+   399→    return { hits, tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
+   400→  } catch (e) {
+   401→    // Faza 9: STALE-WHILE-ERROR — origin indisponibil (circuit open,
+   402→    // admission full, statement timeout, rețea)? Servim cache-ul L1
+   403→    // expirat dacă există, marcat „degraded”. Utilizatorul NU vede erori.
+   404→    const stale = cacheGetStale(cacheKey);
+   405→    if (stale) {
+   406→      return { hits: stale, tookMs: Date.now() - t0, cached: true, totalIndexed: 0, degraded: true };
+   407→    }
+   408→    throw e;
+   409→  } finally {
+   410→    inFlight.delete(cacheKey);
+   411→  }
+   412→}
+   413→
+   414→export function mapHit(r: Record<string, unknown>): LibraryHit {
+   415→  return {
+   416→    id: Number(r.id),
+   417→    externalId: String(r.external_id),
+   418→    title: String(r.title),
+   419→    originalTitle: (r.original_title as string) || null,
+   420→    description: (r.description as string) || "",
+   421→    contentType: String(r.content_type),
+   422→    brand: (r.brand as string) || null,
+   423→    category: (r.category as string) || null,
+   424→    continent: (r.continent as string) || null,
+   425→    country: (r.country as string) || null,
+   426→    provider: String(r.provider),
+   427→    sourceType: String(r.source_type),
+   428→    sourceUrl: (r.source_url as string) || null,
+   429→    embedCode: (r.embed_code as string) || null,
+   430→    thumbnail: (r.thumbnail as string) || null,
+   431→    backdrop: (r.backdrop as string) || null,
+   432→    year: (r.year as number) || null,
+   433→    rating: (r.rating as number) || 0,
+   434→    popularity: Number(r.popularity) || 0,
+   435→    views: Number(r.views) || 0,
+   436→    score: Number(r.score) || 0,
+   437→  };
+   438→}
+   439→
+   440→// ---------- Sugestii (prefix pe titluri + trending) ----------
+   441→// Faza 3: cache LRU propriu pentru suggest/trending (prefixele se repetă
+   442→// masiv la autocompletare → sub-1ms la cald, zero load pe Neon)
+   443→// Faza 5: + cache L2 DISTRIBUIT în Neon (300s, partajat cross-instance)
+   444→// + index covering idx_content_suggest (index-only scans pe 16 partiții)
+   445→// Faza 6: ROLLUP PRE-AGREGAT (tabel suggest_rollup) — pentru prefixe de
+   446→// 1-3 caractere, ranking pe POPULARITATE devine un simplu lookup PK pe
+   447→// bucket (top-40 titluri ordonate pop/views/titlu, recalculat de job de
+   448→// fundal). Numărul de bucket-e e mărginit de alfabet (~48K), NU de
+   449→// numărul de conținuturi → scalează la 30 miliarde rânduri. Prefixe
+   450→// lungi (≥4) rămân pe index-only scan cu early termination.
+   451→const SUG_TTL_MS = 120_000;
+   452→const SUG_MAX = 3_000;
+   453→const sugCache = new Map<string, { exp: number; data: unknown }>();
+   454→// Faza 5: coalescing pe suggest (ca la searchLibrary) — burst-uri de
+   455→// autocompletare pe prefixe identice → O SINGURĂ interogare origin.
+   456→const sugInFlight = new Map<string, Promise<unknown>>();
+   457→
+   458→function sugGet<T>(key: string): T | null {
+   459→  const hit = sugCache.get(key);
+   460→  if (!hit) return null;
+   461→  if (Date.now() > hit.exp) { sugCache.delete(key); return null; }
+   462→  sugCache.delete(key);
+   463→  sugCache.set(key, hit);
+   464→  return hit.data as T;
+   465→}
+   466→
+   467→/** Faza 9: varianta stale — servește și intrări expirate la eșec DB. */
+   468→function sugGetStale<T>(key: string): T | null {
+   469→  const hit = sugCache.get(key);
+   470→  return hit ? (hit.data as T) : null;
+   471→}
+   472→
+   473→/** Faza 12: intrare expirată cu touch LRU — pentru STALE-WHILE-REVALIDATE
+   474→ *  (autocompletarea servește sub-ms mereu; refresh-ul pleacă în fundal). */
+   475→function sugGetStaleEntry<T>(key: string): T | null {
+   476→  const hit = sugCache.get(key);
+   477→  if (!hit) return null;
+   478→  sugCache.delete(key);
+   479→  sugCache.set(key, hit);
+   480→  return hit.data as T;
+   481→}
+   482→
+   483→function sugSet(key: string, data: unknown): void {
+   484→  if (sugCache.size >= SUG_MAX) {
+   485→    const oldest = sugCache.keys().next().value;
+   486→    if (oldest) sugCache.delete(oldest);
+   487→  }
+   488→  sugCache.set(key, { exp: Date.now() + SUG_TTL_MS, data });
+   489→}
+   490→
+   491→/**
+   492→ * Faza 12: re-materializare sugestii pentru o cheie (L2 → rollup/index-only
+   493→ * → L1 + L2). Folosită de foreground (miss) și background (stale revalidate).
+   494→ * Scrierile în cache respectă generația (invalidările le anulează).
+   495→ */
+   496→function sugRecompute(key: string, norm: string, limit: number): Promise<unknown> {
+   497→  const gen = cacheGeneration;
+   498→  const write = (titles: string[]): void => {
+   499→    if (gen !== cacheGeneration) return;
+   500→    sugSet(key, titles);
+   501→    void l2Set(key, titles);
+   502→  };
+   503→  return (async () => {
+   504→    // Faza 5: L2 distribuit — hit-rate crescut cross-instance la prefixe
+   505→    // repetitive de autocompletare (acoperă ~95% din traficul sub vârf)
+   506→    const l2 = await l2Get<string[]>(key, L2_TTL_SUG_SEC);
+   507→    if (l2 && Array.isArray(l2)) {
+   508→      if (gen === cacheGeneration) sugSet(key, l2);
+   509→      return l2;
+   510→    }
+   511→
+   512→    const bucketKey = norm.slice(0, 3);
+   513→
+   514→    // ===== Faza 6: ROLLUP (prefixe 1-3) — ranking pe POPULARITATE =====
+   515→    if (bucketKey.length <= 3) {
+   516→      const rows = await qRead<{ titles: string[]; stale: boolean }>(
+   517→        `SELECT titles,
+   518→                (refreshed_at < now() - interval '10 minutes') AS stale
+   519→         FROM suggest_rollup WHERE prefix_key = $1`,
+   520→        [bucketKey]
+   521→      );
+   522→      const row = rows[0];
+   523→      if (row && Array.isArray(row.titles) && row.titles.length > 0) {
+   524→        // stale-while-revalidate: intoarcem datele vechi imediat,
+   525→        // refresh-ul bucketului pleacă asincron (nu blochează cererea)
+   526→        if (row.stale) void refreshSuggestBucket(bucketKey);
+   527→        const titles = row.titles.slice(0, limit);
+   528→        write(titles);
+   529→        return titles;
+   530→      }
+   531→      // bucket lipsă (prefix nou-făcut / prima cerere): calcul țintit pe
+   532→      // bucketul exact + materializare în rollup (următoarele cereri → PK hit)
+   533→      const fresh = await refreshSuggestBucket(bucketKey);
+   534→      if (fresh.length > 0) {
+   535→        const titles = fresh.slice(0, limit);
+   536→        write(titles);
+   537→        return titles;
+   538→      }
+   539→      // zero potriviri — caching negativ scurt ca să nu batem la fiecare tastă
+   540→      if (gen === cacheGeneration) sugSet(key, []);
+   541→      return [];
+   542→    }
+   543→
+   544→    // ===== Prefixe lungi (≥4): index-only scan, ranking alfabetic cu
+   545→    // EARLY TERMINATION pe Merge Append (≤limit rânduri per partiție).
+   546→    // La ≥4 caractere problema popularității e mai puțin relevantă (util.
+   547→    // a deja scris aproape tot cuvântul), iar agregarea completă pe 64
+   548→    // partiții rămâne prohibitivă la miliarde de rânduri — rollup-ul pe
+   549→    // bucket-e acoperă deja primul moment de decizie (primele 3 taste).=====
+   550→    const rows = await qRead<{ title: string }>(
+   551→      `SELECT DISTINCT title FROM content
+   552→       WHERE search_text LIKE $1 || '%'
+   553→       ORDER BY title LIMIT $2`,
+   554→      [norm, limit]
+   555→    );
+   556→    const titles = rows.map((r) => r.title);
+   557→    write(titles);
+   558→    return titles;
+   559→  })();
+   560→}
+   561→
+   562→/** Faza 12: kick asincron de revalidare sugestii (single-flight prin sugInFlight). */
+   563→function kickSugRevalidate(key: string, norm: string, limit: number): void {
+   564→  if (sugInFlight.has(key)) return;
+   565→  const p = sugRecompute(key, norm, limit).catch(() => { /* stale rămâne servit */ });
+   566→  sugInFlight.set(key, p);
+   567→  void p.finally(() => {
+   568→    if (sugInFlight.get(key) === p) sugInFlight.delete(key);
+   569→  });
+   570→}
+   571→
+   572→/**
+   573→ * Faza 12: re-materializare trending (L2 → search_stats → L1 + L2).
+   574→ */
+   575→function trendRecompute(key: string, limit: number): Promise<TrendItem[]> {
+   576→  const gen = cacheGeneration;
+   577→  return (async (): Promise<TrendItem[]> => {
+   578→    // Faza 5: și trendingul primește L2 distribuit (TTL 120s)
+   579→    const l2 = await l2Get<TrendItem[]>(key, L2_TTL_TREND_SEC);
+   580→    if (l2 && Array.isArray(l2)) {
+   581→      if (gen === cacheGeneration) sugSet(key, l2);
+   582→      return l2;
+   583→    }
+   584→    const rows = await qRead<Record<string, unknown>>(
+   585→      `SELECT norm, original, hits FROM search_stats ORDER BY hits DESC, last_at DESC LIMIT $1`,
+   586→      [limit]
+   587→    );
+   588→    const items = rows.map((r) => ({ norm: String(r.norm), original: String(r.original), hits: Number(r.hits) }));
+   589→    if (gen === cacheGeneration) {
+   590→      sugSet(key, items);
+   591→      void l2Set(key, items);
+   592→    }
+   593→    return items;
+   594→  })();
+   595→}
+   596→
+   597→/** Faza 12: kick asincron de revalidare trending (single-flight). */
+   598→function kickTrendRevalidate(key: string, limit: number): void {
+   599→  if (sugInFlight.has(key)) return;
+   600→  const p = trendRecompute(key, limit).catch(() => { /* stale rămâne servit */ });
+   601→  sugInFlight.set(key, p);
+   602→  void p.finally(() => {
+   603→    if (sugInFlight.get(key) === p) sugInFlight.delete(key);
+   604→  });
+   605→}
+   606→
+   607→export async function suggest(prefix: string, limit = 7): Promise<string[]> {
+   608→  const norm = normalizeRo(prefix);
+   609→  if (!norm) return [];
+   610→  const key = `sug:${norm}:${limit}`;
+   611→  const cached = sugGet<string[]>(key);
+   612→  if (cached) return cached;
+   613→
+   614→  // Faza 12: STALE-WHILE-REVALIDATE — servim instant din stale,
+   615→  // re-materializarea pleacă asincron single-flight în fundal.
+   616→  const staleEntry = sugGetStaleEntry<string[]>(key);
+   617→  if (staleEntry) {
+   618→    kickSugRevalidate(key, norm, limit);
+   619→    return staleEntry;
+   620→  }
+   621→
+   622→  // coalescing: cereri simultane identice partajează aceeași promisiune
+   623→  const pending = sugInFlight.get(key);
+   624→  if (pending) return pending as Promise<string[]>;
+   625→
+   626→  const exec = sugRecompute(key, norm, limit);
+   627→
+   628→  sugInFlight.set(key, exec);
+   629→  try {
+   630→    return await exec;
+   631→  } catch (e) {
+   632→    // Faza 9: stale-while-error pe sugestii — autocompletarea nu afișează
+   633→    // niciodată eroare; cade pe cache-ul vechi sau pe listă goală.
+   634→    const stale = sugGetStale<string[]>(key);
+   635→    if (stale) return stale;
+   636→    if (e instanceof AdmissionRejected || e instanceof DbUnavailable) {
+   637→      return [];
+   638→    }
+   639→    throw e;
+   640→  } finally {
+   641→    sugInFlight.delete(key);
+   642→  }
+   643→}
+   644→
+   645→/**
+   646→ * Faza 6: recalcularea unui SINGUR bucket rollup (țintit, ieftin) +
+   647→ * materializare upsert. Returnează top-40 titluri noi ale bucketului.
+   648→ */
+   649→export async function refreshSuggestBucket(bucketKey: string): Promise<string[]> {
+   650→  try {
+   651→    const rows = await q<{ titles: string[] }>(
+   652→      `INSERT INTO suggest_rollup (prefix_key, titles, item_count, refreshed_at)
+   653→       SELECT $1,
+   654→              COALESCE(jsonb_agg(title ORDER BY pop DESC, views DESC, title) FILTER (WHERE rn <= 40), '[]'::jsonb),
+   655→              count(*) FILTER (WHERE rn <= 40),
+   656→              now()
+   657→       FROM (
+   658→         SELECT title, popularity AS pop, views,
+   659→                row_number() OVER (ORDER BY popularity DESC, views DESC, title ASC) AS rn
+   660→         FROM content
+   661→         WHERE search_text LIKE $1 || '%'
+   662→           AND title IS NOT NULL AND title <> ''
+   663→       ) b
+   664→       ON CONFLICT (prefix_key) DO UPDATE
+   665→         SET titles = EXCLUDED.titles, item_count = EXCLUDED.item_count, refreshed_at = now()
+   666→       RETURNING titles`,
+   667→      [bucketKey]
+   668→    );
+   669→    return Array.isArray(rows[0]?.titles) ? (rows[0].titles as string[]) : [];
+   670→  } catch {
+   671→    return []; // optim — sugestia cade pe L1/L2 sau pe path-ul vechi
+   672→  }
+   673→}
+   674→
+   675→export type TrendItem = { norm: string; original: string; hits: number };
+   676→
+   677→export async function trending(limit = 8): Promise<TrendItem[]> {
+   678→  const key = `trend:${limit}`;
+   679→  const cached = sugGet<TrendItem[]>(key);
+   680→  if (cached) return cached;
+   681→  // Faza 12: STALE-WHILE-REVALIDATE pe trending
+   682→  const staleEntry = sugGetStaleEntry<TrendItem[]>(key);
+   683→  if (staleEntry) {
+   684→    kickTrendRevalidate(key, limit);
+   685→    return staleEntry;
+   686→  }
+   687→  try {
+   688→    const items = await trendRecompute(key, limit);
+   689→    return items;
+   690→  } catch (e) {
+   691→    // Faza 9: trending NU crapă niciodată — stale sau gol
+   692→    const stale = sugGetStale<TrendItem[]>(key);
+   693→    if (stale) return stale;
+   694→    if (e instanceof AdmissionRejected || e instanceof DbUnavailable) {
+   695→      return [];
+   696→    }
+   697→    throw e;
+   698→  }
+   699→}
+   700→
+   701→// ---------- Logging asincron (fire-and-forget, nu blochează răspunsul) ----------
+   702→// Faza 3: semafor cu coadă — logging-ul NU mai poate satura pool-ul Neon
+   703→// (max 2 scrieri concurente, coadă plafonată; sub vârf extrem se renunță
+   704→// la analitică, nu la răspunsul utilizatorului).
+   705→const LOG_MAX_ACTIVE = 2;
+   706→const LOG_MAX_QUEUE = 800;
+   707→let logActive = 0;
+   708→const logQueue: Array<() => Promise<void>> = [];
+   709→
+   710→function pumpLog(): void {
+   711→  while (logActive < LOG_MAX_ACTIVE && logQueue.length > 0) {
+   712→    const job = logQueue.shift();
+   713→    if (!job) break;
+   714→    logActive++;
+   715→    job()
+   716→      .catch(() => { /* analitică — nu rupe nimic */ })
+   717→      .finally(() => {
+   718→        logActive--;
+   719→        pumpLog();
+   720→      });
+   721→  }
+   722→}
+   723→
+   724→export function logSearch(
+   725→  query: string,
+   726→  resultsCount: number,
+   727→  durationMs: number,
+   728→  mode: string,
+   729→  userId?: string | null
+   730→): void {
+   731→  const norm = normalizeRo(query);
+   732→  if (!norm) return;
+   733→  if (logQueue.length >= LOG_MAX_QUEUE) return; // drop sub vârf extrem
+   734→  logQueue.push(async () => {
+   735→    await q(
+   736→      `INSERT INTO search_logs (query, norm, results_count, duration_ms, mode, user_id)
+   737→       VALUES ($1,$2,$3,$4,$5,$6)`,
+   738→      [query.slice(0, 200), norm, resultsCount, durationMs, mode, userId || null]
+   739→    );
+   740→    await q(`SELECT upsert_search_stat($1,$2,$3)`, [norm, query.slice(0, 120), resultsCount]);
+   741→  });
+   742→  pumpLog();
+   743→}
+   744→
+   745→// ---------- Ingestion: inserare conținut nou (URL/embed) ----------
+   746→export type NewContent = {
+   747→  externalId: string;
+   748→  title: string;
+   749→  originalTitle?: string | null;
+   750→  description?: string;
+   751→  contentType: string;
+   752→  brand?: string | null;
+   753→  category?: string | null;
+   754→  continent?: string;
+   755→  country?: string | null;
+   756→  language?: string;
+   757→  provider: string;
+   758→  sourceType: string;
+   759→  sourceUrl?: string | null;
+   760→  embedCode?: string | null;
+   761→  thumbnail?: string | null;
+   762→  year?: number | null;
+   763→  tags?: string[];
+   764→  meta?: Record<string, unknown>;
+   765→  createdBy?: string | null;
+   766→};
+   767→
+   768→/** SQL de inserare conținut — IDENTIC pe toate shard-urile (schema comună). */
+   769→function contentInsertValues(c: NewContent): [string, unknown[]] {
+   770→  const search_text = normalizeRo(
+   771→    [c.title, c.originalTitle || "", c.description || "", (c.tags || []).join(" "), c.brand || "", c.contentType, c.category || "", c.provider].join(" ")
+   772→  );
+   773→  return [
+   774→    `INSERT INTO content
+   775→       (external_id, title, original_title, description, content_type, brand, category,
+   776→        continent, country, language, provider, source_type, source_url, embed_code,
+   777→        thumbnail, year, tags, search_text, meta, created_by)
+   778→     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+   779→     RETURNING *`,
+   780→    [
+   781→      c.externalId, c.title, c.originalTitle || null, c.description || "", c.contentType,
+   782→      c.brand || null, c.category || null, c.continent || "Global", c.country || null,
+   783→      c.language || "en", c.provider, c.sourceType, c.sourceUrl || null, c.embedCode || null,
+   784→      c.thumbnail || null, c.year || null, c.tags || [], search_text,
+   785→      JSON.stringify(c.meta || {}), c.createdBy || null,
+   786→    ],
+   787→  ];
+   788→}
+   789→
+   790→/**
+   791→ * FAZA 15 — INSERARE RUTATĂ PE SHARD:
+   792→ * - hash(external_id) → shard activ (determinist, ponderat);
+   793→ * - shard remote → INSERT pe compute-ul lui + înregistrare în content_shard_map
+   794→ *   (external_id → shard_id + remote_id, pentru lookup-uri cross-compute);
+   795→ * - shard picat → FALLBACK pe primar (disponibilitate > plasament);
+   796→ * - 1 shard activ → calea clasică locală (comportament identic pre-Faza 15).
+   797→ */
+   798→export async function insertContent(c: NewContent): Promise<LibraryHit | null> {
+   799→  // dedup pe external_id la nivel de aplicație (partiționare hash nu permite unique global)
+   800→  const shard = await pickShardFor(c.externalId).catch(() => null);
+   801→
+   802→  if (shard && shard.kind === "remote" && shard.dsn) {
+   803→    // dedup cross-compute: hartă de rutare → primar → shard-ul țintă
+   804→    const mapped = await shardMapLookup(c.externalId).catch(() => null);
+   805→    if (mapped) return null;
+   806→    const dupLocal = await qOne<{ id: number }>(`SELECT id FROM content WHERE external_id = $1 LIMIT 1`, [c.externalId]).catch(() => null);
+   807→    if (dupLocal) return null;
+   808→    const [sql, params] = contentInsertValues(c);
+   809→    try {
+   810→      const dupRemote = await shardQuery<{ id: number }>(shard, `SELECT id FROM content WHERE external_id = $1 LIMIT 1`, [c.externalId]);
+   811→      if (dupRemote[0]) {
+   812→        await shardMapUpsert(c.externalId, shard.id, Number(dupRemote[0].id));
+   813→        return null;
+   814→      }
+   815→      const rows = await shardQuery<Record<string, unknown>>(shard, sql, params);
+   816→      const hit = rows[0] ? mapHit(rows[0]) : null;
+   817→      if (hit) await shardMapUpsert(c.externalId, shard.id, hit.id);
+   818→      invalidateSearchCache("sl:");
+   819→      void invalidateGlobalRecommendations().catch(() => {});
+   820→      return hit;
+   821→    } catch (e) {
+   822→      console.error(`[shards] insert pe ${shard.name} eșuat, fallback pe primar:`, String(e).slice(0, 120));
+   823→      // cade pe calea locală de mai jos
+   824→    }
+   825→  }
+   826→
+   827→  const [sql, params] = contentInsertValues(c);
+   828→  const rows = await q<Record<string, unknown>>(sql, params);
+   829→  invalidateSearchCache("sl:");
+   830→  void invalidateGlobalRecommendations().catch(() => {});
+   831→  return rows[0] ? mapHit(rows[0]) : null;
+   832→}
+   833→
+   834→export async function recordPlayback(
+   835→  contentId: number,
+   836→  provider: string,
+   837→  event: string,
+   838→  seconds: number,
+   839→  userId?: string | null
+   840→): Promise<void> {
+   841→  try {
+   842→    await q(`SELECT record_playback($1,$2,$3,$4,$5)`, [contentId, provider, event, seconds, userId || null]);
+   843→  } catch {
+   844→    /* nu blochează redarea */
+   845→  }
+   846→}
+   847→

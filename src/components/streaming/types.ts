@@ -169,6 +169,22 @@ export type CapacityStatus = {
       topRoutes: { route: string; count: number; avgMs: number }[];
     };
   };
+  faza19?: {
+    clusterControl: {
+      instanceId: string;
+      heartbeatSec: number;
+      viewTtlSec: number;
+      view: { alive: number; globalInflight: number; globalRps: number; globalCapacity: number; nodes: { instanceId: string; region: string; inflight: number; rps: number; breaker: string; ageSec: number }[] };
+      ratePool: { key: string; capacity: number; refillPerSec: number; leaseSize: number; remaining: number; envTunables: string };
+      globalLimiter: string;
+      cron: string;
+    };
+    stressTest: {
+      howTo: string;
+      stages: string;
+      verdict: string;
+    };
+  };
   userDriven?: {
     import: {
       sources: string;

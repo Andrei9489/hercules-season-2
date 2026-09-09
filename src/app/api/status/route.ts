@@ -7,6 +7,12 @@ import { withCache, wrapMetrics } from "@/lib/http-cache";
 import { shardsStatus } from "@/lib/shards";
 import { regionsStatus } from "@/lib/regions";
 import { metricsSnapshot } from "@/lib/metrics";
+import {
+  instanceId,
+  clusterViewCached,
+  poolPreset,
+  leaseCount,
+} from "@/lib/cluster-control";
 // ============================================================
 // /api/status — metrici REALE din Neon + raport de capacitate
 // Faza 9: REZILIENȚĂ + IMPORT USER-DRIVEN M3U — circuit breaker
@@ -190,7 +196,7 @@ async function getHandler(req: NextRequest) {
         },
       },
       resilience: {
-        phase: 17,
+        phase: 19,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
@@ -215,6 +221,48 @@ async function getHandler(req: NextRequest) {
           ui: "panoul Motor & Capacitate arată live rps/p50/p95/hit-rate din fereastra 60s",
         },
         live: metricsSnapshot(60),
+      },
+      faza19: {
+        clusterControl: {
+          instanceId: instanceId(),
+          heartbeatSec: 3,
+          viewTtlSec: 15,
+          view: (() => {
+            const v = clusterViewCached();
+            return {
+              alive: v?.alive ?? 0,
+              globalInflight: v?.globalInflight ?? 0,
+              globalRps: v?.globalRps ?? 0,
+              globalCapacity: v?.globalCapacity ?? 0,
+              nodes: (v?.nodes || []).map((n) => ({
+                instanceId: n.instanceId,
+                region: n.region,
+                inflight: n.inflight,
+                rps: n.rps,
+                breaker: n.breaker,
+                ageSec: n.ageSec,
+              })),
+            };
+          })(),
+          ratePool: (() => {
+            const p = poolPreset("search");
+            return {
+              key: "search",
+              capacity: p.capacity,
+              refillPerSec: p.refillPerSec,
+              leaseSize: p.leaseSize,
+              remaining: -1, // real: citit din Neon la cerere în /api/health — aici e cache-local, fără DB pe status
+              envTunables: "GLOBAL_SEARCH_CAPACITY / GLOBAL_SEARCH_REFILL / GLOBAL_SEARCH_LEASE",
+            };
+          })(),
+          globalLimiter: `strat global cu lease-uri atomice în Neon (cluster_rate_pool) peste stratul local per-IP — abuzul ×N instanțe nu mai trece; instanța curentă a luat ${leaseCount()} lease-uri`,
+          cron: "cleanup_cluster_nodes (heartbeat-uri moarte >1h) în mentenanța internă",
+        },
+        stressTest: {
+          howTo: "bun scripts/stress-search-f19.ts — rampă REALĂ de căutări simultane (HTTP real, fără mock)",
+          stages: "250 → 1.000 → 2.500 → 5.000 → 10.000 concurenți in-flight, fiecare treaptă susținută, cu latenze p50/p95/p99, erori și metrics server-side per treaptă",
+          verdict: "vezi scripts/stress-results-f19.json + scripts/stress-chart-f19.png după rulare — verdict onest per treaptă + matematica de cluster pentru 10.000",
+        },
       },
       faza16: {
         replica: {

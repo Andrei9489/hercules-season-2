@@ -3,6 +3,7 @@ import { cachedFetch } from "@/lib/cache";
 import { searchLibrary, suggest, trending, logSearch } from "@/lib/neon-search";
 import { regionFromRequest } from "@/lib/regions";
 import { rateLimit, rateLimitTiered, clientIp, tooMany } from "@/lib/rate-limit";
+import { globalRateLimit } from "@/lib/cluster-control";
 import { withCache, wrapMetrics } from "@/lib/http-cache";
 
 const TMDB_KEY = process.env.TMDB_API_KEY || "3dd880e229e7b83d8e63c4b6f08f77a4";
@@ -73,6 +74,15 @@ async function getHandler(req: NextRequest) {
     { burst: mode === "suggest" ? 300 : 100, perMinute: mode === "suggest" ? 1500 : 750 }
   );
   if (!rl.ok) return tooMany(rl);
+
+  // ---- FAZA 19a — STRAT GLOBAL DISTRIBUIT: rezerva cluster din Neon ----
+  // Plafonul per-IP de mai sus e LOCAL instanței. La N instanțe în spatele
+  // LB-ului (ținta 10 mil. utilizatori), stratul global cu lease-uri
+  // (cluster_rate_pool în Neon) păstrează bugetul origin cluster-wide:
+  // abuzul ×N instanțe nu mai trece, iar la secătuirea rezervei cererile
+  // intră în degradare controlată (plafon local strâns, niciodată nelimitat).
+  const grl = await globalRateLimit(mode === "suggest" ? "suggest" : "search");
+  if (!grl.ok) return tooMany(grl);
 
   // ---- mode=suggest: autocompletare (titluri Neon + trending)
   // Faza 12: EDGE CACHE + ETag pe sugestii — prefixele se repetă masiv

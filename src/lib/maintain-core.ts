@@ -8,6 +8,8 @@
 // FAZA 18:
 //   • probe_regions     — ping LIVE pe toate regiunile multi-region +health în Neon
 //   • cleanup_recommend_cache — payload-uri recomandări expirate
+// FAZA 19:
+//   • cleanup_cluster_nodes — heartbeat-uri moarte (>1h) din cluster_nodes
 // Extras din /api/maintain pentru a putea fi apelat și de cron-ul intern
 // (instrumentation → maintain-scheduler), fără auto-apel HTTP.
 // ============================================================
@@ -21,6 +23,7 @@ export type MaintainOp =
   | "refresh_rollup"
   | "probe_regions"
   | "cleanup_recommend_cache"
+  | "cleanup_cluster_nodes"
   | "stats";
 export type MaintainReport = Record<string, unknown>;
 
@@ -131,6 +134,19 @@ export async function runMaintenance(op: MaintainOp = "all"): Promise<MaintainRe
     } catch {
       // tabelul nu există încă (before DDL v18) — non-blocant
       report.recommendCacheDeleted = 0;
+    }
+  }
+  if (op === "all" || op === "cleanup_cluster_nodes") {
+    // FAZA 19a — heartbeat-uri moarte: instanțe care nu s-au publicat >1h
+    // (crash/OOM/scală-in) rămân în cluster_nodes și încarcă registry-ul.
+    try {
+      const r = await q(
+        `DELETE FROM cluster_nodes WHERE seen_at < now() - interval '1 hour' RETURNING instance_id`
+      );
+      report.clusterNodesDeleted = r.length;
+    } catch {
+      // tabelul nu există încă (before DDL v19) — non-blocant
+      report.clusterNodesDeleted = 0;
     }
   }
   return report;

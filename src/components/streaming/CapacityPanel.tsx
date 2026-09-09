@@ -277,6 +277,19 @@ export function CapacityPanel() {
                   </p>
                 </>
               )}
+              {st.faza19 && (
+                <>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🧩 Control cluster (Faza 19a): {st.faza19.clusterControl.view.alive} instanțe vii • inflight global {st.faza19.clusterControl.view.globalInflight} • {st.faza19.clusterControl.view.globalRps.toFixed(1)} rps cluster • buget origin {st.faza19.clusterControl.view.globalCapacity} • rezervă globală search {st.faza19.clusterControl.ratePool.capacity.toLocaleString("ro-RO")} tok @ {st.faza19.clusterControl.ratePool.refillPerSec}/s • lease {st.faza19.clusterControl.ratePool.leaseSize}
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🌐 Limiter global: {st.faza19.clusterControl.globalLimiter} • {st.faza19.clusterControl.cron}
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🔥 Stres test 10.000 simultan (Faza 19b): {st.faza19.stressTest.howTo} • {st.faza19.stressTest.stages}
+                  </p>
+                </>
+              )}
               {st.faza11 && (
                 <>
                   <p className="mt-1 truncate text-[10px] text-zinc-600">

@@ -1,0 +1,272 @@
+{
+  "at": "2026-09-09T20:33:37.575Z",
+  "base": "http://localhost:3000",
+  "method": "HTTP real, buclă închisă, IP-uri virtuale distincte, zero mock",
+  "stages": [
+    {
+      "phase": "A-brut",
+      "targetConcurrency": 250,
+      "durationSec": 12,
+      "completed": 949,
+      "rps": 79.08,
+      "p50Ms": 2027,
+      "p95Ms": 14485,
+      "p99Ms": 19281,
+      "maxInflight": 250,
+      "avgInflight": 173,
+      "timeouts": 42,
+      "errorsByKind": {
+        "timeout": 42
+      },
+      "server": {
+        "searchDelta": 991,
+        "rps429": 0,
+        "rps5xx": 0,
+        "meanServerMs": 4253
+      },
+      "cluster": {
+        "alive": 1,
+        "globalInflight": 0,
+        "globalRps": 17.5
+      },
+      "verdict": "subiectiv sub capacitate nominală — coadă vizibilă, dar fără erori masive"
+    },
+    {
+      "phase": "A-brut",
+      "targetConcurrency": 1000,
+      "durationSec": 12,
+      "completed": 2110,
+      "rps": 175.83,
+      "p50Ms": 7461,
+      "p95Ms": 16516,
+      "p99Ms": 18773,
+      "maxInflight": 1000,
+      "avgInflight": 692,
+      "timeouts": 14,
+      "errorsByKind": {
+        "429": 42,
+        "timeout": 14
+      },
+      "server": {
+        "searchDelta": 2115,
+        "rps429": 3.58,
+        "rps5xx": 0,
+        "meanServerMs": 1703
+      },
+      "cluster": {
+        "alive": 1,
+        "globalInflight": 0,
+        "globalRps": 79.7
+      },
+      "verdict": "subiectiv sub capacitate nominală — coadă vizibilă, dar fără erori masive"
+    },
+    {
+      "phase": "A-brut",
+      "targetConcurrency": 2500,
+      "durationSec": 12,
+      "completed": 3789,
+      "rps": 315.75,
+      "p50Ms": 14183,
+      "p95Ms": 17582,
+      "p99Ms": 19473,
+      "maxInflight": 2500,
+      "avgInflight": 1630,
+      "timeouts": 390,
+      "errorsByKind": {
+        "timeout": 390
+      },
+      "server": {
+        "searchDelta": 3993,
+        "rps429": 4.83,
+        "rps5xx": 0,
+        "meanServerMs": 1125
+      },
+      "cluster": {
+        "alive": 1,
+        "globalInflight": 0,
+        "globalRps": 87.4
+      },
+      "verdict": "saturație fizică a instanței unice — necesare instanțe suplimentare pentru această treaptă"
+    },
+    {
+      "phase": "A-brut",
+      "targetConcurrency": 5000,
+      "durationSec": 12,
+      "completed": 2808,
+      "rps": 234,
+      "p50Ms": 14748,
+      "p95Ms": 19002,
+      "p99Ms": 19850,
+      "maxInflight": 5000,
+      "avgInflight": 3138,
+      "timeouts": 3356,
+      "errorsByKind": {
+        "429": 46,
+        "timeout": 3356
+      },
+      "server": {
+        "searchDelta": 3052,
+        "rps429": 6.83,
+        "rps5xx": 0,
+        "meanServerMs": 1361
+      },
+      "cluster": {
+        "alive": 1,
+        "globalInflight": 1,
+        "globalRps": 30.5
+      },
+      "verdict": "saturație fizică a instanței unice — necesare instanțe suplimentare pentru această treaptă"
+    },
+    {
+      "phase": "A-brut",
+      "targetConcurrency": 10000,
+      "durationSec": 15,
+      "completed": 2944,
+      "rps": 196.27,
+      "p50Ms": 13313,
+      "p95Ms": 19254,
+      "p99Ms": 19846,
+      "maxInflight": 10000,
+      "avgInflight": 5849,
+      "timeouts": 8505,
+      "errorsByKind": {
+        "429": 2,
+        "timeout": 8505
+      },
+      "server": {
+        "searchDelta": 3596,
+        "rps429": 26.07,
+        "rps5xx": 0,
+        "meanServerMs": 2636
+      },
+      "cluster": {
+        "alive": 1,
+        "globalInflight": 0,
+        "globalRps": 97.8
+      },
+      "verdict": "saturație fizică a instanței unice — necesare instanțe suplimentare pentru această treaptă"
+    },
+    {
+      "phase": "B-protecție",
+      "targetConcurrency": 1000,
+      "durationSec": 12,
+      "completed": 1904,
+      "rps": 158.67,
+      "p50Ms": 7196,
+      "p95Ms": 13732,
+      "p99Ms": 16718,
+      "maxInflight": 1000,
+      "avgInflight": 654,
+      "timeouts": 96,
+      "errorsByKind": {
+        "429": 42,
+        "timeout": 96
+      },
+      "server": {
+        "searchDelta": 1983,
+        "rps429": 5.42,
+        "rps5xx": 0,
+        "meanServerMs": 1975
+      },
+      "cluster": {
+        "alive": 1,
+        "globalInflight": 1,
+        "globalRps": 1.2
+      },
+      "verdict": "saturație fizică a instanței unice — necesare instanțe suplimentare pentru această treaptă"
+    },
+    {
+      "phase": "B-protecție",
+      "targetConcurrency": 2500,
+      "durationSec": 12,
+      "completed": 2880,
+      "rps": 240,
+      "p50Ms": 14501,
+      "p95Ms": 19244,
+      "p99Ms": 19672,
+      "maxInflight": 2500,
+      "avgInflight": 1668,
+      "timeouts": 630,
+      "errorsByKind": {
+        "429": 9,
+        "timeout": 630
+      },
+      "server": {
+        "searchDelta": 3074,
+        "rps429": 4.92,
+        "rps5xx": 0,
+        "meanServerMs": 1496
+      },
+      "cluster": {
+        "alive": 0,
+        "globalInflight": 0,
+        "globalRps": 0
+      },
+      "verdict": "saturație fizică a instanței unice — necesare instanțe suplimentare pentru această treaptă"
+    },
+    {
+      "phase": "B-protecție",
+      "targetConcurrency": 5000,
+      "durationSec": 12,
+      "completed": 1324,
+      "rps": 110.33,
+      "p50Ms": 10254,
+      "p95Ms": 15708,
+      "p99Ms": 19691,
+      "maxInflight": 5000,
+      "avgInflight": 3258,
+      "timeouts": 4529,
+      "errorsByKind": {
+        "500": 19,
+        "timeout": 4529
+      },
+      "server": {
+        "searchDelta": 2149,
+        "rps429": 45.42,
+        "rps5xx": 5.58,
+        "meanServerMs": 4760
+      },
+      "cluster": {
+        "alive": 1,
+        "globalInflight": 0,
+        "globalRps": 17.8
+      },
+      "verdict": "saturație fizică a instanței unice — necesare instanțe suplimentare pentru această treaptă"
+    },
+    {
+      "phase": "B-protecție",
+      "targetConcurrency": 10000,
+      "durationSec": 15,
+      "completed": 4935,
+      "rps": 329,
+      "p50Ms": 14460,
+      "p95Ms": 19574,
+      "p99Ms": 19887,
+      "maxInflight": 10000,
+      "avgInflight": 6184,
+      "timeouts": 7586,
+      "errorsByKind": {
+        "429": 85,
+        "timeout": 7586
+      },
+      "server": {
+        "searchDelta": 5337,
+        "rps429": 5.67,
+        "rps5xx": 0,
+        "meanServerMs": 995
+      },
+      "cluster": {
+        "alive": 1,
+        "globalInflight": 0,
+        "globalRps": 126.1
+      },
+      "verdict": "saturație fizică a instanței unice — necesare instanțe suplimentare pentru această treaptă"
+    }
+  ],
+  "verdict": {
+    "peakSingleInstanceRps": 315.75,
+    "brutAt10k": "196.27 rps • P95 19254ms • timeout 8505 • erori {\"429\":2,\"timeout\":8505}",
+    "protectieAt10k": "329 rps • 429 server 5.67/s • P95 19574ms • timeout 7586",
+    "conclusion": "Capacitate brută măsurată: 315.75 rps căutări/origin pe INSTANȚA UNICĂ de dev. Pentru 10.000 căutări simultane: la P50 ~13313ms/căutare, 10.000 în zbor ≈ 10.000/P95_s → cu 315.75 rps/instanță ≈ 32 instanțe (LB Faza 15 deja suportă N instanțe; cu edge offload 85% din Faza 17, bugetul origin cluster 1.500 r/s = 48 instanțe)."
+  }
+}

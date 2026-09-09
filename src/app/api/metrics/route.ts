@@ -15,6 +15,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { renderPrometheus, metricsSnapshot } from "@/lib/metrics";
+import { renderClusterGauges } from "@/lib/cluster-control";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +40,9 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  return new NextResponse(renderPrometheus(), {
+  // FAZA 19a — gauge-uri cluster (sv_cluster_*) alipite expunerii locale;
+  // sunt citite din cache-ul heartbeat-ului → zero DB la scrape.
+  return new NextResponse(renderPrometheus() + renderClusterGauges(), {
     status: 200,
     headers: {
       "Content-Type": "text/plain; version=0.0.4; charset=utf-8",
