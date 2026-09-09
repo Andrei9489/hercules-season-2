@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSession, signOut, signIn } from "next-auth/react";
 import {
   Home, Film, Tv, Sparkles, Music2, Baby, Trophy, Gamepad2,
-  Globe2, Heart, Newspaper, Laugh, Bookmark, Search, Menu, X, LogIn, LogOut, User, Radio, PlusCircle, Layers,
+  Globe2, Heart, Newspaper, Laugh, Bookmark, Search, Menu, X, LogIn, LogOut, User, Radio, PlusCircle, Layers, Wrench,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -25,6 +25,7 @@ import { DetailModal } from "./DetailModal";
 import { PlayerModal } from "./PlayerModal";
 import { AICursor } from "./AICursor";
 import { SyncButton } from "./SyncCenter";
+import { ManageView } from "./ManageView";
 import { installAutoSync, drainQueue, subscribeSync } from "@/lib/sync-outbox";
 
 const NAV: { key: ViewKey; label: string; icon: typeof Home; group: string }[] = [
@@ -43,6 +44,7 @@ const NAV: { key: ViewKey; label: string; icon: typeof Home; group: string }[] =
   { key: "fun", label: "Distracție", icon: Laugh, group: "Live" },
   { key: "lista", label: "Lista Mea", icon: Bookmark, group: "Cont" },
   { key: "colectii", label: "Colecțiile Mele", icon: Layers, group: "Cont" },
+  { key: "gestionare", label: "Gestionare & Duplicate", icon: Wrench, group: "Cont" },
 ];
 
 // Faza 4: meniuri COMPLET FUNCȚIONALE — fiecare item navighează la view + parametru
@@ -628,6 +630,7 @@ export function Shell() {
             onOpen={openDetail} onPlay={openPlayer}
           />
         )}
+        {view === "gestionare" && <ManageView />}
         {view === "search" && (
           <SearchView
             query={searchQuery}

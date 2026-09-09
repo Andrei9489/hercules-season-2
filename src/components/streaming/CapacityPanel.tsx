@@ -234,6 +234,31 @@ export function CapacityPanel() {
                   </p>
                 </>
               )}
+              {st.faza16 && (
+                <>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🔀 Multi-region (Faza 16): {st.faza16.regions.active}/{st.faza16.regions.total} regiuni active —{" "}
+                    {st.faza16.regions.list.map((r) => `${r.code} [${r.role}${r.state === "active" ? " • activ" : ""}${r.lastPingMs != null ? ` • ${r.lastPingMs}ms` : ""}]`).join(" • ")} •{" "}
+                    {st.faza16.replica.searchIntegration}
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🌍 Rutare citiri: {st.faza16.replica.routing} • probe live: {st.faza16.replica.probe}
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🔍 Duplicate (Faza 16): gardă la încărcare (blocare + alertă live) • scan pe toate shard-urile • dedupe automat (păstrează 1) — Gestionare & Duplicate în sidebar
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🗑️ Ștergere multiplă: {st.faza16.manage.postersBulkDelete} • {st.faza16.manage.contentBulkDelete} • {st.faza16.manage.audit}
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🌊 Ingest la scară (Faza 16): {st.faza16.ingest.totalProcessed.toLocaleString("ro-RO")} rânduri PROCESATE prin sharding real pe {st.faza16.ingest.shardsUsed} shard-uri active ({st.faza16.ingest.waves} valuri, vârf {st.faza16.ingest.peakSimultaneous.toLocaleString("ro-RO")} simultani) •
+                    {" "}{st.faza16.ingest.throughputRps.toFixed(0)} rânduri/s • distribuție {st.faza16.ingest.distributionRatio.toFixed(2)}:1 • căutare P50 {st.faza16.ingest.searchP50Ms}ms / P95 {st.faza16.ingest.searchP95Ms}ms
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    ⚠️ {st.faza16.ingest.storageCeilingNote}
+                  </p>
+                </>
+              )}
               {st.faza11 && (
                 <>
                   <p className="mt-1 truncate text-[10px] text-zinc-600">

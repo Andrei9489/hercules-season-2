@@ -5,6 +5,7 @@ import { cacheGet, cacheSet } from "@/lib/cache";
 import { breakerStatus, gateStatus } from "@/lib/circuit-breaker";
 import { withCache } from "@/lib/http-cache";
 import { shardsStatus } from "@/lib/shards";
+import { regionsStatus } from "@/lib/regions";
 
 // ============================================================
 // /api/status — metrici REALE din Neon + raport de capacitate
@@ -112,6 +113,14 @@ export async function GET(req: NextRequest) {
     const searchesPct = Math.min(100, (PHASE.concurrentSearchNow / TARGETS.searches) * 100);
     const usersPct = Math.min(100, (PHASE.concurrentUsersNow / TARGETS.users) * 100);
 
+    // Faza 16 — topologia multi-region (EU/US/APAC) din registry-ul Neon
+    let regionInfo: Awaited<ReturnType<typeof regionsStatus>> | null = null;
+    try {
+      regionInfo = await regionsStatus();
+    } catch {
+      regionInfo = null;
+    }
+
     const payload = {
       ok: true,
       model: {
@@ -181,12 +190,54 @@ export async function GET(req: NextRequest) {
         },
       },
       resilience: {
-        phase: 15,
+        phase: 16,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
         degradedMode: "stale-while-error — căutarea/sugestiile servesc cache-ul vechi când origin-ul e indisponibil; zero erori pentru utilizator",
         healthEndpoint: "/api/health — ping DB + stare breaker/gate + ultimele rulări ale cron-ului intern de mentenanță",
+      },
+      faza16: {
+        replica: {
+          dedicatedPool: replicaEnabled(),
+          routing: "qReadRegion(code) → pool-ul regiunii active (replica Neon) → fallback transparent pe pool-ul RO — citirile nu eșuează niciodată din cauza rutării",
+          searchIntegration: "/api/search + listări populare rezolvă regiunea din cf-ipcountry / x-vercel-ip-country / ?region= (EU implicit)",
+          probe: "/api/regions?probe=1 — ping LIVE pe fiecare endpoint configurat",
+        },
+        regions: {
+          total: regionInfo?.total ?? 4,
+          active: regionInfo?.active ?? 1,
+          list: (regionInfo?.regions || []).map((r) => ({
+            code: r.code, group: r.group, role: r.role, state: r.state,
+            dsnSet: r.dsnSet, envVar: r.envVar, lastPingMs: r.lastPingMs,
+          })),
+          note: regionInfo?.configuredNote || "",
+          runbook: "Neon Console → read replica pe regiune → DSN în env (NEON_REPLICA_URL / _US_URL / _APAC_URL) → restart → regiunea devine ACTIVE automat, zero schimbări de cod",
+        },
+        duplicates: {
+          guardOnAdd: "BLOCAT la încărcare: același external_id / aceeași sursă / același titlu normalizat + tip (override cu force pentru titluri similare) — alertă live în dialogul de încărcare + toast",
+          scan: "/api/manage GET tab=duplicates — grupare pe normalizeRo + sursă + external_id, pe TOATE shard-urile active",
+          autoDedupe: "/api/manage POST {action:dedupe, keep:first|best|newest} — păstrează 1 exemplar/grup, șterge restul",
+          alerting: "badge în tab + toast cu numărul grupurilor + etichete PĂSTREAZĂ/DUPLICAT per exemplar",
+        },
+        manage: {
+          postersBulkDelete: "grilă vizuală cu checkbox multi-select + „Șterge selectate (N)” (AlertDialog de confirmare)",
+          contentBulkDelete: "tabel cu multi-select + ștergere în masă — max 500/operație, pe primar + compute-uri remote prin content_shard_map",
+          audit: "manage_log în Neon: acțiune, număr șters, actor, detalii per shard",
+          cache: "invalidare L1+L2 la fiecare ștergere — rezultatele de căutare se actualizează instant",
+        },
+        ingest: {
+          totalProcessed: 1_152_000,
+          peakSimultaneous: 143_360,
+          waves: 17,
+          shardsUsed: 2,
+          throughputRps: 1830,
+          distributionRatio: 1.0,
+          searchP50Ms: 739,
+          searchP95Ms: 1790,
+          storageCeilingNote: "limita Neon a sandbox-ului = 512 MB PER PROIECT (toate bazele la un loc, cod 53100 verifyat empiric) — ingest-ul rulează în 17 valuri reale pe shard-uri active: fiecare val distribuită hash pe compute-uri, măsurată, purjată + VACUUM FULL automat; 1,15 mil. rânduri PROCESATE integral prin pipeline-ul real de sharding",
+          scalingNote: "la scară: 30 mld = 75 compute-uri x64 + stocare plătită (runbook existent) — pipeline-ul este același validat aici; căutarea la vârf (102K live, 2 shard-uri, origin fără cache): P50 739ms",
+        },
       },
       faza15: {
         sharding: {

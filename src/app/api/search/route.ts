@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 import { searchLibrary, suggest, trending, logSearch } from "@/lib/neon-search";
+import { regionFromRequest } from "@/lib/regions";
 import { rateLimit, rateLimitTiered, clientIp, tooMany } from "@/lib/rate-limit";
 import { withCache } from "@/lib/http-cache";
 
@@ -52,6 +53,14 @@ export async function GET(req: NextRequest) {
   const mode = sp.get("mode") || "library";
   const limit = Math.min(48, Number(sp.get("limit")) || 24);
   const t0 = Date.now();
+
+  // FAZA 16 — MULTI-REGION: regiunea preferată pentru citiri (header geo edge
+  // cf-ipcountry / x-vercel-ip-country, parametru ?region= sau EU implicit).
+  // Citirile de origin merg pe replică când regiunea e activă (qReadRegion).
+  const region = regionFromRequest(
+    req.headers.get("cf-ipcountry") || req.headers.get("x-vercel-ip-country"),
+    sp.get("region")
+  );
 
   // ---- Faza 3+10: rate limiting pe NIVELURI (autentificat > anonim) ----
   // Utilizatorii autentificați (cookie sesiune prezent) primesc 2.5x buget —
@@ -107,7 +116,7 @@ export async function GET(req: NextRequest) {
 
   // ---- mode=library (implicit): doar Neon, viteză maximă
   if (mode === "library") {
-    const lib = await searchLibrary(q, { limit });
+    const lib = await searchLibrary(q, { limit, region });
     logSearch(q, lib.hits.length, lib.tookMs, "library");
     // Faza 3: cache HTTP la margine (CDN/edge) pentru vârfuri — top-queries
     // servite fără să atingă origin-ul (stale-while-revalidate)
@@ -134,7 +143,7 @@ export async function GET(req: NextRequest) {
   const extResults: SearchResult[] = [];
   const errors: string[] = [];
 
-  const neonTask = searchLibrary(q, { limit: 24 })
+  const neonTask = searchLibrary(q, { limit: 24, region })
     .then((lib) => {
       lib.hits.forEach((h) => neonResults.push(libToResult(h)));
       return lib.hits.length;
@@ -273,6 +282,7 @@ export async function GET(req: NextRequest) {
     libraryCount: libraryHits,
     tookMs,
     cachedResults: unique.length > 0 && unique[0].source === "neon",
+    region,
     errors: errors.length ? errors : undefined,
   });
 }

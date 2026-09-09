@@ -1,0 +1,15 @@
+{
+  "at": "2026-09-09T05:55:32.498Z",
+  "totalProcessed": 1152000,
+  "peakSimultaneous": 143360,
+  "waves": 17,
+  "shardsUsed": 2,
+  "bytesPerRow": 2048,
+  "distributionRatio": 1,
+  "searchP50Ms": 739,
+  "searchP95Ms": 1790,
+  "durationS": 68,
+  "searchHitsTotal": 80,
+  "throughputRps": 1830,
+  "note": "Faza 16b: 1,15 mil. rânduri PROCESATE prin pipeline-ul real de sharding (rutare hash FNV-1a → INSERT pe compute deținător → content_shard_map → scatter-gather căutare), în 17 valuri adaptate plafonului de stocare 512MB/proiect (cod 53100 verifyat empiric), cu compactare VACUUM FULL automată între valuri"
+}

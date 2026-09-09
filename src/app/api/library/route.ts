@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { createHash } from "node:crypto";
 import { authOptions } from "@/lib/auth";
 import { searchLibrary, insertContent, recordPlayback, normalizeRo, invalidateSearchCache } from "@/lib/neon-search";
+import { checkDuplicate } from "@/lib/duplicates";
 import { q, qOne } from "@/lib/pg";
 import { shardMapByRemoteId, shardQuery } from "@/lib/shards";
 import { resolveSource, titleFromUrl } from "@/lib/source-resolver";
@@ -236,8 +237,12 @@ export async function POST(req: NextRequest) {
         : [];
 
     const sessionSaved: Awaited<ReturnType<typeof insertContent>>[] = [];
-    const duplicates: string[] = [];
+    const duplicates: { title: string; reason: string; id?: number }[] = [];
     const failed: string[] = [];
+    // FAZA 16: force=true trece peste blocajul „titlu identic + același tip"
+    // (când utilizatorul confirmă că NU e duplicat). Sursele identice (același
+    // link / external_id) rămân blocate INTOTDEAUNA — idempotență strictă.
+    const force = Boolean(body.force);
 
     for (const entry of entries.slice(0, 50)) { // max 50/batch — protejează pool-ul
       const input = entry.input.trim();
@@ -264,10 +269,24 @@ export async function POST(req: NextRequest) {
         (refUrl ? titleFromUrl(refUrl) : "") ||
         "Cod embed personalizat";
 
-      const dup = await qOne<{ id: number; title: string }>(
-        `SELECT id, title FROM content WHERE external_id = $1 LIMIT 1`, [extId]
-      );
-      if (dup) { duplicates.push(dup.title); continue; }
+      // FAZA 16 — GARDĂ DUPLICATE (înainte de INSERT):
+      //  • external_id identic sau sursă identică → BLOCAT mereu;
+      //  • titlu identic (normalizat RO) + același tip → BLOCAT (trecere cu force).
+      // Funcționează pe TOATE shard-urile active (scan cross-compute).
+      const dupCheck = await checkDuplicate({
+        externalId: extId,
+        sourceUrl: refUrl || null,
+        title,
+        contentType,
+      }).catch(() => ({ duplicate: false, matches: [] as { id: number; title: string; reason: string }[] }));
+      if (dupCheck.duplicate) {
+        const hard = dupCheck.matches.find((m) => m.reason !== "title");
+        if (hard || !force) {
+          const first = dupCheck.matches[0];
+          duplicates.push({ title: first.title, reason: first.reason, id: first.id });
+          continue;
+        }
+      }
 
       const thumb = posterUrl || oembed?.thumbnail || ytThumb(input) || null;
 

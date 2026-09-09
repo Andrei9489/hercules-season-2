@@ -73,4 +73,8 @@ export const api = {
   // Faza 11 — colecții personale + mentenanță
   collections: <T>(query = "") => get<T>(`/api/collections${query ? `?${query}` : ""}`),
   collectionsPost: <T>(body: unknown) => post<T>("/api/collections", body),
+  // Faza 16 — gestionare bibliotecă (postere/conținut/duplicate) + multi-region
+  manage: <T>(query: string) => get<T>(`/api/manage${query ? `?${query}` : ""}`),
+  managePost: <T>(body: unknown) => post<T>("/api/manage", body),
+  regions: <T>(query = "") => get<T>(`/api/regions${query ? `?${query}` : ""}`),
 };

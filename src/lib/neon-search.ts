@@ -10,6 +10,7 @@
 // Țintă finală: 30 miliarde itemi • 10.000 căutări simultane.
 // ============================================================
 import { q, qOne, qRead, AdmissionRejected, DbUnavailable } from "./pg";
+import { qReadRegion } from "./regions";
 import {
   getActiveShards,
   execOnAllShards,
@@ -172,7 +173,7 @@ export function invalidateSearchCache(prefix?: string): void {
 }
 
 // ---------- Căutare FTS + trigram (index-driven, fără seq scan) ----------
-type SearchOpts = { limit?: number; offset?: number; type?: string; brand?: string };
+type SearchOpts = { limit?: number; offset?: number; type?: string; brand?: string; region?: string };
 
 // Faza 12: generația cache-ului — invalidările incrementează; recompute-urile
 // de background captură generația la start și NU mai scrie în cache dacă s-a
@@ -192,7 +193,8 @@ function searchRecompute(
   limit: number,
   offset: number,
   type?: string,
-  brand?: string
+  brand?: string,
+  region?: string
 ): Promise<LibraryHit[]> {
   const gen = cacheGeneration;
   return (async (): Promise<LibraryHit[]> => {
@@ -204,7 +206,7 @@ function searchRecompute(
       return hits;
     }
 
-    const hits = await runSearchFanout(norm, limit, offset, type, brand);
+    const hits = await runSearchFanout(norm, limit, offset, type, brand, region);
 
     // Faza 12: scriem în cache DOAR dacă între timp nu a venit o invalidare
     if (gen === cacheGeneration) {
@@ -228,7 +230,8 @@ async function runSearchFanout(
   limit: number,
   offset: number,
   type?: string,
-  brand?: string
+  brand?: string,
+  region?: string
 ): Promise<LibraryHit[]> {
   const active = await getActiveShards().catch(() => [] as Shard[]);
   if (active.length > 1) {
@@ -242,7 +245,9 @@ async function runSearchFanout(
     merged.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.id - a.id);
     return merged.slice(offset, offset + limit);
   }
-  const rows = await qRead<Record<string, unknown>>(...buildSearchQuery(norm, limit, offset, type, brand));
+  // FAZA 16: citirea de origin merge pe REPLICĂ/regiunea cerută (qReadRegion)
+  // — fallback transparent pe pool-ul RO când regiunea nu e activă.
+  const rows = await qReadRegion<Record<string, unknown>>(region, ...buildSearchQuery(norm, limit, offset, type, brand));
   return rows.map(mapHit);
 }
 
@@ -323,10 +328,11 @@ function kickSearchRevalidate(
   limit: number,
   offset: number,
   type?: string,
-  brand?: string
+  brand?: string,
+  region?: string
 ): void {
   if (inFlight.has(cacheKey)) return;
-  const p = searchRecompute(cacheKey, norm, limit, offset, type, brand).catch(
+  const p = searchRecompute(cacheKey, norm, limit, offset, type, brand, region).catch(
     () => { /* stale-ul rămâne servit; circuit breaker/timeout gestionate de pg.ts */ }
   );
   inFlight.set(cacheKey, p);
@@ -340,7 +346,7 @@ export async function searchLibrary(
   opts: SearchOpts = {}
 ): Promise<{ hits: LibraryHit[]; tookMs: number; cached: boolean; totalIndexed: number; degraded?: boolean; revalidating?: boolean }> {
   const t0 = Date.now();
-  const { limit = 24, offset = 0, type, brand } = opts;
+  const { limit = 24, offset = 0, type, brand, region } = opts;
   const norm = normalizeRo(query).slice(0, 120);
 
   if (!norm) {
@@ -360,7 +366,8 @@ export async function searchLibrary(
     where += ` ORDER BY popularity DESC, id DESC LIMIT $${params.length}`;
     params.push(offset);
     where += ` OFFSET $${params.length}`;
-    const rows = await qRead<Record<string, unknown>>(`SELECT * FROM content WHERE ${where}`, params);
+    // FAZA 16: listare populară rutată pe regiune (replică activă → replică)
+    const rows = await qReadRegion<Record<string, unknown>>(region, `SELECT * FROM content WHERE ${where}`, params);
     return { hits: rows.map(mapHit), tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
   }
 
@@ -372,7 +379,7 @@ export async function searchLibrary(
   // INSTANT din stale + re-materializare asincronă single-flight în fundal.
   const staleEntry = cacheGetStaleEntry(cacheKey);
   if (staleEntry) {
-    kickSearchRevalidate(cacheKey, norm, limit, offset, type, brand);
+    kickSearchRevalidate(cacheKey, norm, limit, offset, type, brand, region);
     return { hits: staleEntry, tookMs: Date.now() - t0, cached: true, totalIndexed: 0, revalidating: true };
   }
 
@@ -383,7 +390,7 @@ export async function searchLibrary(
     return { hits, tookMs: Date.now() - t0, cached: false, totalIndexed: 0 };
   }
 
-  const exec = searchRecompute(cacheKey, norm, limit, offset, type, brand);
+  const exec = searchRecompute(cacheKey, norm, limit, offset, type, brand, region);
 
   inFlight.set(cacheKey, exec);
   try {

@@ -183,6 +183,13 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(req.url);
 
+  // DEV-SAFE: pe localhost NU intervenim deloc (chunk-urile de dev au URL-uri
+  // stabile — cache-first le-ar servi vechi după fiecare rebuild; în producție
+  // hash-urile se schimbă la fiecare build, deci strategia rămâne validă)
+  if (self.location.hostname === "localhost" || self.location.hostname === "127.0.0.1") {
+    return;
+  }
+
   // doar same-origin
   if (url.origin !== self.location.origin) return;
 

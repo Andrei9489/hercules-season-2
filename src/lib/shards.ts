@@ -150,6 +150,26 @@ export async function pickShardFor(externalId: string): Promise<Shard> {
   return slots[slot];
 }
 
+/**
+ * FAZA 16 — rutare BATCH cu ACEEAȘI funcție hash ca pickShardFor:
+ * distribuie un lot mare de external_ids pe shard-urile active (ponderea
+ * respectată) FĂRĂ câte un apel async per rând — folosită de ingest-ul la
+ * scară (1M+ rânduri). Map: shardId → lista de ids care îi aparțin.
+ */
+export function routeBatch(ids: string[], active: Shard[]): Map<number, string[]> {
+  const out = new Map<number, string[]>();
+  if (active.length === 0) return out;
+  const slots: Shard[] = [];
+  for (const s of active) for (let i = 0; i < s.weight; i++) slots.push(s);
+  for (const id of ids) {
+    const shard = slots[fnv1a(id) % slots.length];
+    const arr = out.get(shard.id) || [];
+    arr.push(id);
+    out.set(shard.id, arr);
+  }
+  return out;
+}
+
 // ---------- Hartă de rutare (external_id → shard + id remote) ----------
 export async function shardMapUpsert(externalId: string, shardId: number, remoteId: number | null): Promise<void> {
   try {

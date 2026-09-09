@@ -141,6 +141,22 @@ export type CapacityStatus = {
       batchLimit: number;
     };
   };
+  faza16?: {
+    replica: { dedicatedPool: boolean; routing: string; searchIntegration: string; probe: string };
+    regions: {
+      total: number; active: number;
+      list: { code: string; group: string; role: string; state: string; dsnSet: boolean; envVar: string | null; lastPingMs: number | null }[];
+      note: string;
+      runbook: string;
+    };
+    duplicates: { guardOnAdd: string; scan: string; autoDedupe: string; alerting: string };
+    manage: { postersBulkDelete: string; contentBulkDelete: string; audit: string; cache: string };
+    ingest: {
+      totalProcessed: number; peakSimultaneous: number; waves: number; shardsUsed: number;
+      throughputRps: number; distributionRatio: number; searchP50Ms: number; searchP95Ms: number;
+      storageCeilingNote: string; scalingNote: string;
+    };
+  };
   userDriven?: {
     import: {
       sources: string;
@@ -307,7 +323,7 @@ export type ViewKey =
   | "acasa" | "filme" | "seriale" | "anime" | "muzica" | "copii"
   | "sport" | "gaming" | "documentare" | "telenovele" | "stiri"
   | "fun" | "lista" | "search" | "universuri" | "showbiz" | "radio"
-  | "colectii";
+  | "colectii" | "gestionare";
 
 // FAZA 11 — colecții personale (playlists utilizator, 100% Neon)
 export type Collection = {

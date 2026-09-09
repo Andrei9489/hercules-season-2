@@ -60,6 +60,16 @@ type M3UImportResult = {
   topGroups: { group: string; n: number }[];
 };
 
+// FAZA 16 — rezultatul gărzii de duplicate la salvare
+type DupInfo = { title: string; reason: string; id?: number };
+type AddResult = { added: number; duplicates: DupInfo[]; failed: string[]; items: LibraryItem[] };
+
+const REASON_LABEL: Record<string, string> = {
+  external_id: "același ID de sursă",
+  source: "același link / stream",
+  title: "titlu identic (același tip)",
+};
+
 export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
   const [mode, setMode] = useState<"sources" | "m3u">("sources");
 
@@ -86,6 +96,10 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
   const [m3uText, setM3uText] = useState("");
   const [m3uUrl, setM3uUrl] = useState("");
   const [importing, setImporting] = useState(false);
+
+  // ---- FAZA 16: gardă duplicate LIVE (alertă înainte de salvare) ----
+  const [dupWarn, setDupWarn] = useState<{ title: string; reason: string; id: number } | null>(null);
+  const [forceAdd, setForceAdd] = useState(false);
 
   const lines = useMemo(() => splitSources(input), [input]);
 
@@ -135,11 +149,40 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
     if (ref.startsWith("http")) setTitle(titleFromUrl(ref));
   }, [mode, lines, detected, title]);
 
+  // FAZA 16 — verificare duplicat LIVE (debounce 450ms): dacă titlul + tipul
+  // sau sursa există deja în bibliotecă → ALERTĂ vizibilă înainte de salvare.
+  useEffect(() => {
+    if (mode !== "sources" || lines.length !== 1 || !lines[0]) {
+      setDupWarn(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const d = detected;
+        const ref = d && d.kind !== "html" ? ((d as { src?: string; url?: string }).src || (d as { url?: string }).url || "") : "";
+        const effTitle = title.trim() || (ref ? titleFromUrl(ref) : lines[0].slice(0, 60));
+        const r = await api.managePost<{ duplicate: boolean; matches: { id: number; title: string; reason: string }[] }>({
+          action: "check",
+          title: effTitle,
+          contentType: type,
+          sourceUrl: ref || undefined,
+        });
+        if (cancelled) return;
+        setDupWarn(r.duplicate && r.matches[0] ? { title: r.matches[0].title, reason: r.matches[0].reason, id: r.matches[0].id } : null);
+      } catch {
+        if (!cancelled) setDupWarn(null);
+      }
+    }, 450);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [mode, lines, detected, title, type]);
+
   const reset = () => {
     setInput(""); setTitle(""); setPosterUrl(""); setDescription("");
     setYear(""); setGenres(""); setType("video"); setBrand(""); setCountry("");
     setSecOn(false); setSecSecret(""); setSecParam("token"); setSecType("query"); setSecTtl("300");
     setM3uText(""); setM3uUrl("");
+    setDupWarn(null); setForceAdd(false);
   };
 
   const save = async () => {
@@ -155,7 +198,7 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
       const signing = secOn && !bulk && direct && secSecret.trim().length >= 4
         ? { type: secType, param: secParam.trim() || "token", secret: secSecret.trim(), ttlSec: Number(secTtl) || 300 }
         : undefined;
-      const r = await api.libraryPost<{ added: number; duplicates: string[]; failed: string[]; items: LibraryItem[] }>({
+      const r = await api.libraryPost<AddResult>({
         action: "add",
         items: bulk ? lines : undefined,
         input: bulk ? undefined : lines[0],
@@ -168,15 +211,22 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
         brand: brand || undefined,
         country: country.trim() || undefined,
         signing,
+        force: forceAdd || undefined,
       });
       const parts = [`${r.added} salvat(e) în Neon ✅`];
-      if (r.duplicates?.length) parts.push(`${r.duplicates.length} duplicate ignorate`);
+      if (r.duplicates?.length) {
+        const d0 = r.duplicates[0];
+        parts.push(`⚠️ ${r.duplicates.length} BLOCAT(E) — există deja (${REASON_LABEL[d0.reason] || d0.reason}): „${d0.title.slice(0, 48)}”`);
+      }
       if (r.failed?.length) parts.push(`${r.failed.length} eșuat(e)`);
       toast({
         title: parts.join(" • "),
         description: bulk
-          ? `${lines.length} surse procesate${r.duplicates?.length ? ` (ex: ${r.duplicates[0]})` : ""}`
-          : `${r.items?.[0]?.title || lines[0].slice(0, 50)}`,
+          ? `${lines.length} surse procesate`
+          : r.duplicates?.length
+            ? `⚠️ Acest conținut există deja în bibliotecă (id ${r.duplicates[0].id ?? "?"}) — nu a fost adăugat de 2 ori.`
+            : `${r.items?.[0]?.title || lines[0].slice(0, 50)}`,
+        variant: r.duplicates?.length && r.added === 0 ? "destructive" : undefined,
       });
       onAdded(r.items?.[0]);
       reset();
@@ -271,6 +321,24 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
                   </>
                 ) : (
                   <>✗ Nicio sursă recunoscută — dar poți încerca oricum redarea generică</>
+                )}
+              </div>
+            )}
+
+            {lines.length <= 1 && dupWarn && (
+              <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-200 ring-1 ring-amber-600/40" data-duplicate-alert>
+                <b>⚠️ Există deja în bibliotecă:</b> „{dupWarn.title.slice(0, 60)}” (id {dupWarn.id}) — {REASON_LABEL[dupWarn.reason] || dupWarn.reason}.
+                Salvarea va fi <b>BLOCATĂ</b> — nu se pot încărca două conținuturi la fel.
+                {dupWarn.reason === "title" && (
+                  <label className="mt-1.5 flex items-center gap-2 font-medium text-amber-100">
+                    <input
+                      type="checkbox"
+                      checked={forceAdd}
+                      onChange={(e) => setForceAdd(e.target.checked)}
+                      className="h-3.5 w-3.5 accent-amber-500"
+                    />
+                    Este alt conținut (titlu similar, sursă diferită) — adaugă oricum
+                  </label>
                 )}
               </div>
             )}
