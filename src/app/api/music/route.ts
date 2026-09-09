@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 
+import { wrapPublicGet } from "@/lib/http-cache";
 const YT_KEY = process.env.YOUTUBE_API_KEY || "AIzaSyAWJ0f6XdhPb3fJL6EYjB5ZamaoM1ZT1XM";
 
 export type MusicItem = {
@@ -55,7 +56,7 @@ async function youtubeSearch(q: string, max = 8): Promise<{ key: string; title: 
   }
 }
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const mode = sp.get("mode") || "top";
 
@@ -136,3 +137,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Eroare muzică" }, { status: 502 });
   }
 }
+
+// Faza 17a — edge cache public (CDN) + metrics Prometheus pentru music
+export const GET = wrapPublicGet("music", getHandler, { sMaxage: 600, swr: 900 });

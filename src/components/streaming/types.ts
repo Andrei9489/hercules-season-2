@@ -157,6 +157,18 @@ export type CapacityStatus = {
       storageCeilingNote: string; scalingNote: string;
     };
   };
+  faza17?: {
+    edgeOffload: { catalogRoutes: number; cachePolicy: string; cacheableShare: string; ttl: string; note: string };
+    observability: {
+      endpoint: string; counters: string; histogram: string; gauges: string;
+      security: string; cluster: string; ui: string;
+    };
+    live: {
+      uptimeSec: number; windowSec: number; requests: number; rps: number;
+      p50Ms: number; p95Ms: number; errorRatePct: number; edgeHitPct: number;
+      topRoutes: { route: string; count: number; avgMs: number }[];
+    };
+  };
   userDriven?: {
     import: {
       sources: string;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 
+import { wrapPublicGet } from "@/lib/http-cache";
 // Jikan API — MyAnimeList
 export type AnimeItem = {
   id: string;
@@ -53,7 +54,7 @@ async function jikanFetch<T>(url: string, attempts = 2): Promise<T> {
   throw lastErr;
 }
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const mode = sp.get("mode") || "top";
   const page = sp.get("page") || "1";
@@ -117,3 +118,6 @@ export async function GET(req: NextRequest) {
     }
   }
 }
+
+// Faza 17a — edge cache public (CDN) + metrics Prometheus pentru anime
+export const GET = wrapPublicGet("anime", getHandler, { sMaxage: 300, swr: 600 });

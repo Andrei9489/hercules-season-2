@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 
+import { wrapPublicGet } from "@/lib/http-cache";
 export type GameItem = {
   id: string;
   name: string;
@@ -11,7 +12,7 @@ export type GameItem = {
   extra?: Record<string, unknown>;
 };
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const mode = sp.get("mode") || "pokemon";
 
@@ -131,3 +132,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Eroare gaming" }, { status: 502 });
   }
 }
+
+// Faza 17a — edge cache public (CDN) + metrics Prometheus pentru gaming
+export const GET = wrapPublicGet("gaming", getHandler, { sMaxage: 300, swr: 600 });

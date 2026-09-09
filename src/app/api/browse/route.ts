@@ -10,6 +10,7 @@ import { normalizeRo } from "@/lib/neon-search";
 import { withCache } from "@/lib/http-cache";
 import { cacheGet, cacheSet, cacheGetStale } from "@/lib/cache";
 
+import { wrapMetrics } from "@/lib/http-cache";
 export const dynamic = "force-dynamic";
 
 type Row = Record<string, unknown>;
@@ -36,7 +37,7 @@ const TYPE_LIVE_KEYWORDS: Record<string, string[]> = {
   music: ["music", "muzica"],
 };
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const page = Math.max(1, Number(sp.get("page")) || 1);
   const size = Math.min(20, Math.max(20, Number(sp.get("size")) || 20)); // FIX: 20 postere
@@ -165,3 +166,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "db", message: String(e) }, { status: 500 });
   }
 }
+
+// Faza 17 — observabilitate Prometheus pentru browse
+export const GET = wrapMetrics("browse", getHandler);

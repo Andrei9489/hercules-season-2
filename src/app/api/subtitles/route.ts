@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 
+import { wrapPublicGet } from "@/lib/http-cache";
 const OS_KEY = process.env.OPENSUBTITLES_API_KEY || "iHdrgVgNTYZQXZhW75Clfa62A5knFn7n";
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const tmdbId = sp.get("tmdbId");
   const query = sp.get("query");
@@ -44,3 +45,6 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
+// Faza 17a — edge cache public (CDN) + metrics Prometheus pentru subtitles
+export const GET = wrapPublicGet("subtitles", getHandler, { sMaxage: 120, swr: 300 });

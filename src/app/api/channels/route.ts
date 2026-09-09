@@ -6,6 +6,7 @@ import { countryName } from "@/lib/countries";
 import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
 import { withCache } from "@/lib/http-cache";
 
+import { wrapMetrics } from "@/lib/http-cache";
 // ============================================================
 // /api/channels — canale TV live (Popular News) + RADIO LIVE din Neon
 // ?q= &country= &continent= &limit= &offset= &type=live_tv|radio
@@ -32,7 +33,7 @@ export type ChannelRow = {
   bitrate?: number | null;
 };
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   // Faza 3: rate limiting per IP + cache HTTP la margine
   const rl = rateLimit(`chan:${clientIp(req)}`, { burst: 60, perMinute: 240 });
   if (!rl.ok) return tooMany(rl);
@@ -163,3 +164,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }
 }
+
+// Faza 17 — observabilitate Prometheus pentru channels
+export const GET = wrapMetrics("channels", getHandler);

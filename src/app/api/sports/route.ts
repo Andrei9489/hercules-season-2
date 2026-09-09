@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 
+import { wrapPublicGet } from "@/lib/http-cache";
 const FD_KEY = process.env.FOOTBALL_DATA_API_KEY || "8053ce106f444e9ca7d1bdf859b81b99";
 const BDL_KEY = process.env.BALLDONTLIE_API_KEY || "552b85f6-65b9-4aa7-b058-8201ebc06e47";
 
@@ -18,7 +19,7 @@ export type SportEvent = {
   source: string;
 };
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const mode = sp.get("mode") || "football";
 
@@ -199,3 +200,6 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
+// Faza 17a — edge cache public (CDN) + metrics Prometheus pentru sports
+export const GET = wrapPublicGet("sports", getHandler, { sMaxage: 60, swr: 120 });

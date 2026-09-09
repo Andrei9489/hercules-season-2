@@ -12,6 +12,7 @@ import { parseM3U, normalizeM3UInputUrl, type M3UChannel } from "@/lib/m3u-parse
 import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
 import { withCache } from "@/lib/http-cache";
 
+import { wrapMetrics } from "@/lib/http-cache";
 type Item = Record<string, unknown>;
 
 // ---------- METADATE oEmbed REALE (fără chei, endpoint-uri publice) ----------
@@ -61,7 +62,7 @@ function ytThumb(input: string): string | null {
 }
 
 /** GET /api/library?limit=18&offset=0&type=movie&brand=marvel&q=... */
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const limit = Math.min(60, Number(sp.get("limit")) || 18);
   const offset = Math.max(0, Number(sp.get("offset")) || 0);
@@ -551,3 +552,6 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ error: "unknown-action" }, { status: 400 });
 }
+
+// Faza 17 — observabilitate Prometheus pentru library
+export const GET = wrapMetrics("library", getHandler);

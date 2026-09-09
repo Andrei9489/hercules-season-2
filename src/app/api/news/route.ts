@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 
+import { wrapPublicGet } from "@/lib/http-cache";
 // RSS aggregator: BBC, CNN, NHK, Al Jazeera (+ Tech & Sport)
 type NewsItem = {
   id: string;
@@ -36,7 +37,7 @@ function stripHtml(s: string): string {
     .trim();
 }
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const feed = req.nextUrl.searchParams.get("feed") || "bbc";
 
   try {
@@ -73,3 +74,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Eroare la feed" }, { status: 502 });
   }
 }
+
+// Faza 17a — edge cache public (CDN) + metrics Prometheus pentru news
+export const GET = wrapPublicGet("news", getHandler, { sMaxage: 60, swr: 180 });

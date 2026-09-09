@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 
+import { wrapPublicGet } from "@/lib/http-cache";
 // TVMaze — seriale internaționale (telenovele, shows TV)
 export type TvItem = {
   id: string;
@@ -37,7 +38,7 @@ function mapTvmaze(s: Record<string, unknown>): TvItem {
   };
 }
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const mode = sp.get("mode") || "popular";
   const page = sp.get("page") || "0";
@@ -105,3 +106,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Eroare TVMaze" }, { status: 502 });
   }
 }
+
+// Faza 17a — edge cache public (CDN) + metrics Prometheus pentru tv
+export const GET = wrapPublicGet("tv", getHandler, { sMaxage: 300, swr: 600 });

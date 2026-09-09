@@ -3,10 +3,10 @@ import { q, qOne, qRead, replicaEnabled } from "@/lib/pg";
 import { trending } from "@/lib/neon-search";
 import { cacheGet, cacheSet } from "@/lib/cache";
 import { breakerStatus, gateStatus } from "@/lib/circuit-breaker";
-import { withCache } from "@/lib/http-cache";
+import { withCache, wrapMetrics } from "@/lib/http-cache";
 import { shardsStatus } from "@/lib/shards";
 import { regionsStatus } from "@/lib/regions";
-
+import { metricsSnapshot } from "@/lib/metrics";
 // ============================================================
 // /api/status — metrici REALE din Neon + raport de capacitate
 // Faza 9: REZILIENȚĂ + IMPORT USER-DRIVEN M3U — circuit breaker
@@ -68,7 +68,7 @@ const BENCH = {
   note: "Faza 15: CLUSTER 4 instanțe + LB = 341,7 r/s (vs 178 pe instanță unică, ×1,92) • origin ×3,6 (scalare aproape liniară) • ancoră sesiuni: 3,42 mil. × 1.000 instanțe • 0 erori 5xx pe cluster (429 = rate-limit single-IP din bench)",
 };
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const cached = cacheGet<{ ok: boolean }>("status:v15");
   if (cached) return withCache(req, cached, { sMaxage: 10, swr: 60 });
 
@@ -190,12 +190,31 @@ export async function GET(req: NextRequest) {
         },
       },
       resilience: {
-        phase: 16,
+        phase: 17,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
         degradedMode: "stale-while-error — căutarea/sugestiile servesc cache-ul vechi când origin-ul e indisponibil; zero erori pentru utilizator",
         healthEndpoint: "/api/health — ping DB + stare breaker/gate + ultimele rulări ale cron-ului intern de mentenanță",
+      },
+      faza17: {
+        edgeOffload: {
+          catalogRoutes: 10,
+          cachePolicy: "s-maxage + stale-while-revalidate + ETag/304 pe TOATE rutele publice (cataloage + browse/search/library/channels + mode=full) — CDN-ul servește repeat-urile FĂRĂ origin",
+          cacheableShare: "14 rute publice cache-able + 4 fierbinți cu headere CDN interne → aproape întreg traficul anonim e edge-servabil",
+          ttl: "cataloage 60-600s după natura datelor (sports/news 60s, music 600s), search 30-60s, browse 30s",
+          note: "Faza 17a: cele 10 rute de cataloage externe (tmdb/tv/anime/music/sports/gaming/kids/news/fun/subtitles) au intrat în cache edge public — anterior răspundeau fără headere CDN și loveau origin-ul la fiecare cerere",
+        },
+        observability: {
+          endpoint: "/api/metrics — format text Prometheus 0.0.4 (scrape standard: Prometheus, Grafana Cloud, Datadog, Vector)",
+          counters: "sv_http_requests_total{route,code,cache} — contor per rută/cod/stare-cache",
+          histogram: "sv_http_request_duration_ms — histogramă Prometheus (11 bucket-uri + sum + count) per rută",
+          gauges: "uptime, RSS, rps fereastră 60s, p50/p95, hit-rate edge, erori 5xx, breaker, admission",
+          security: "env METRICS_TOKEN → Bearer/„?token=” obligatoriu; fără token (dev) e deschis — expune doar agregate, zero date utilizatori",
+          cluster: "fiecare instanță își expune propriile metrics; Prometheus scrape-ui toate și agrega — convenția standard",
+          ui: "panoul Motor & Capacitate arată live rps/p50/p95/hit-rate din fereastra 60s",
+        },
+        live: metricsSnapshot(60),
       },
       faza16: {
         replica: {
@@ -422,3 +441,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }
 }
+
+// Faza 17 — observabilitate Prometheus pentru status
+export const GET = wrapMetrics("status", getHandler);

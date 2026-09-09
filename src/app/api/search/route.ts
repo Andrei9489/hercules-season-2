@@ -3,7 +3,7 @@ import { cachedFetch } from "@/lib/cache";
 import { searchLibrary, suggest, trending, logSearch } from "@/lib/neon-search";
 import { regionFromRequest } from "@/lib/regions";
 import { rateLimit, rateLimitTiered, clientIp, tooMany } from "@/lib/rate-limit";
-import { withCache } from "@/lib/http-cache";
+import { withCache, wrapMetrics } from "@/lib/http-cache";
 
 const TMDB_KEY = process.env.TMDB_API_KEY || "3dd880e229e7b83d8e63c4b6f08f77a4";
 
@@ -45,7 +45,7 @@ function libToResult(h: LibraryItemRow): SearchResult {
   };
 }
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const q = sp.get("q")?.trim() || "";
   // Faza 2: mod implicit "library" (Neon-only, sub-100ms, gata 10.000 simultan).
@@ -120,21 +120,17 @@ export async function GET(req: NextRequest) {
     logSearch(q, lib.hits.length, lib.tookMs, "library");
     // Faza 3: cache HTTP la margine (CDN/edge) pentru vârfuri — top-queries
     // servite fără să atingă origin-ul (stale-while-revalidate)
-    return NextResponse.json(
+    // Faza 17: withCache adaugă acum și ETag/304 pe lângă s-maxage+SWR
+    return withCache(
+      req,
       {
         results: lib.hits.map(libToResult),
         libraryCount: lib.hits.length,
         tookMs: lib.tookMs,
         cached: lib.cached,
       },
-      {
-        headers: {
-          // Faza 11: s-maxage 30s (de la 15s) + SWR 120s — mai mult offload
-          // la CDN pentru căutările în bibliotecă (invalidare rămâne la ingest)
-          "Cache-Control": "public, s-maxage=30, stale-while-revalidate=120",
-          "X-RateLimit-Remaining": String(rl.remaining),
-        },
-      }
+      { sMaxage: 30, swr: 120 },
+      { "X-RateLimit-Remaining": String(rl.remaining) }
     );
   }
 
@@ -277,12 +273,23 @@ export async function GET(req: NextRequest) {
     return true;
   });
 
-  return NextResponse.json({
-    results: unique,
-    libraryCount: libraryHits,
-    tookMs,
-    cachedResults: unique.length > 0 && unique[0].source === "neon",
-    region,
-    errors: errors.length ? errors : undefined,
-  });
+  // Faza 17 — mode=full intră și el în cache edge public (date 100% publice
+  // din cataloage externe; CDN-ul servește repeat-urile aceluiași query FĂRĂ
+  // să mai declanșeze 5 apeluri externe + query Neon pe origin).
+  return withCache(
+    req,
+    {
+      results: unique,
+      libraryCount: libraryHits,
+      tookMs,
+      cachedResults: unique.length > 0 && unique[0].source === "neon",
+      region,
+      errors: errors.length ? errors : undefined,
+    },
+    { sMaxage: 60, swr: 120 },
+    { "X-RateLimit-Remaining": String(rl.remaining) }
+  );
 }
+
+// Faza 17 — observabilitate Prometheus pentru search
+export const GET = wrapMetrics("search", getHandler);

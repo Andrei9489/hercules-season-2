@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 import { BRANDS, TMDB_GENRES, TELENOVELA_SHOWS } from "@/lib/brands";
 
+import { wrapPublicGet } from "@/lib/http-cache";
 const TMDB_KEY = process.env.TMDB_API_KEY || "3dd880e229e7b83d8e63c4b6f08f77a4";
 const BASE = "https://api.themoviedb.org/3";
 const IMG = "https://image.tmdb.org/t/p";
@@ -46,7 +47,7 @@ async function tmdbEn<T>(path: string, params: Record<string, string> = {}): Pro
   return cachedFetch<T>(`${BASE}${path}?${qs}`, { ttl: 600 });
 }
 
-export async function GET(req: NextRequest) {
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const mode = sp.get("mode") || "trending";
   const page = sp.get("page") || "1";
@@ -218,3 +219,6 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
+// Faza 17a — edge cache public (CDN) + metrics Prometheus pentru tmdb
+export const GET = wrapPublicGet("tmdb", getHandler, { sMaxage: 300, swr: 600 });

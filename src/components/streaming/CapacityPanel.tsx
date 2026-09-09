@@ -259,6 +259,24 @@ export function CapacityPanel() {
                   </p>
                 </>
               )}
+              {st.faza17 && (
+                <>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    ⚡ Edge offload total (Faza 17): {st.faza17.edgeOffload.catalogRoutes} rute de cataloage externe cu s-maxage + SWR + ETag/304 (peste browse/search/library/channels) —{" "}
+                    {st.faza17.edgeOffload.ttl} • repeat-urile sunt servite de CDN FĂRĂ origin
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    📈 Observabilitate (Faza 17): {st.faza17.observability.endpoint} • {st.faza17.observability.counters} •{" "}
+                    {st.faza17.observability.cluster}
+                  </p>
+                  <p className="mt-1 truncate text-[10px] text-zinc-600">
+                    🩺 LIVE (60s): {st.faza17.live.requests.toLocaleString("ro-RO")} cereri • {st.faza17.live.rps.toFixed(2)} rps • P50 {st.faza17.live.p50Ms}ms • P95 {st.faza17.live.p95Ms}ms • erori {st.faza17.live.errorRatePct}% • edge-hit {st.faza17.live.edgeHitPct}% • uptime {Math.round(st.faza17.live.uptimeSec / 60)} min
+                    {st.faza17.live.topRoutes.length > 0 && (
+                      <> • top: {st.faza17.live.topRoutes.slice(0, 4).map((r) => `${r.route} ${r.count}`).join(" • ")}</>
+                    )}
+                  </p>
+                </>
+              )}
               {st.faza11 && (
                 <>
                   <p className="mt-1 truncate text-[10px] text-zinc-600">

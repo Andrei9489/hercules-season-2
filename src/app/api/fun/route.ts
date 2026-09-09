@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedFetch } from "@/lib/cache";
 
-export async function GET(req: NextRequest) {
+import { wrapPublicGet } from "@/lib/http-cache";
+async function getHandler(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const mode = sp.get("mode") || "quote";
 
@@ -58,3 +59,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Eroare fun" }, { status: 502 });
   }
 }
+
+// Faza 17a — edge cache public (CDN) + metrics Prometheus pentru fun
+export const GET = wrapPublicGet("fun", getHandler, { sMaxage: 300, swr: 600 });
