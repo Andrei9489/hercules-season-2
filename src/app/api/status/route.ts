@@ -13,6 +13,7 @@ import {
   poolPreset,
   leaseCount,
 } from "@/lib/cluster-control";
+import { socialStats } from "@/lib/social";
 // ============================================================
 // /api/status — metrici REALE din Neon + raport de capacitate
 // Faza 9: REZILIENȚĂ + IMPORT USER-DRIVEN M3U — circuit breaker
@@ -79,7 +80,7 @@ async function getHandler(req: NextRequest) {
   if (cached) return withCache(req, cached, { sMaxage: 10, swr: 60 });
 
   try {
-    const [contentCount, typeCount, providerCount, logs, last24h, avgDur, topTrend, dbSize, partitionCount, idxCount, liveTvCount, radioCount, countryCount, streamFormats, rollupBuckets, aiTax, aiTaxKind, aiMeta, aiInsights] =
+    const [contentCount, typeCount, providerCount, logs, last24h, avgDur, topTrend, dbSize, partitionCount, idxCount, liveTvCount, radioCount, countryCount, streamFormats, rollupBuckets, aiTax, aiTaxKind, aiMeta, aiInsights, social] =
       await Promise.all([
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content`),
         qOne<{ n: string }>(`SELECT count(DISTINCT content_type)::text AS n FROM content`),
@@ -100,6 +101,7 @@ async function getHandler(req: NextRequest) {
         q<{ kind: string; n: number }>(`SELECT kind, count(*)::int AS n FROM genres GROUP BY kind ORDER BY n DESC`),
         qOne<{ ai: string; wg: string }>(`SELECT (SELECT count(*)::text FROM content WHERE meta ? 'aiExtractedAt') AS ai, (SELECT count(DISTINCT content_id)::text FROM content_genres) AS wg`),
         qOne<{ n: string }>(`SELECT count(*)::text AS n FROM ai_insights`),
+        socialStats().catch(() => null),
       ]);
 
     const content = Number(contentCount?.n || 0);
@@ -196,7 +198,7 @@ async function getHandler(req: NextRequest) {
         },
       },
       resilience: {
-        phase: 19,
+        phase: 20,
         circuitBreaker: breakerStatus(),
         admissionControl: gateStatus(),
         statementTimeout: { readMs: 8000, writeMs: 20000 },
@@ -263,6 +265,18 @@ async function getHandler(req: NextRequest) {
           stages: "250 → 1.000 → 2.500 → 5.000 → 10.000 concurenți in-flight, fiecare treaptă susținută, cu latenze p50/p95/p99, erori și metrics server-side per treaptă",
           verdict: "vezi scripts/stress-results-f19.json + scripts/stress-chart-f19.png după rulare — verdict onest per treaptă + matematica de cluster pentru 10.000",
         },
+      },
+      faza20: {
+        social: {
+          tables: "social_comment • social_reaction • social_follow • social_activity • social_cache (DDL v20 în Neon)",
+          api: "/api/social/comments (GET/POST/DELETE) • /api/social/reactions (POST like) • /api/social/follow (GET/POST) • /api/social/feed (GET)",
+          cache: "L2 distribuit în social_cache (partajat între instanțe) + invalidare la scrieri; stare viewer per cerere (fără scurgeri de stare în cache)",
+          ui: "CommentsPanel în DetailModal (comentarii + like + follow autor) • ActivityFeed pe home (global / following)",
+          feedSignals: "watch • list_add • review • comment • like • follow — scrise fire-and-forget la acțiunile reale ale utilizatorului",
+          cron: "cleanup_social_cache în mentenanța internă",
+          rateLimits: "comentarii 8 burst/30 min • reacții 30 burst/120 min • follow 15 burst/60 min (per IP)",
+        },
+        live: social ?? undefined,
       },
       faza16: {
         replica: {

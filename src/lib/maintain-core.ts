@@ -24,6 +24,7 @@ export type MaintainOp =
   | "probe_regions"
   | "cleanup_recommend_cache"
   | "cleanup_cluster_nodes"
+  | "cleanup_social_cache"
   | "stats";
 export type MaintainReport = Record<string, unknown>;
 
@@ -147,6 +148,15 @@ export async function runMaintenance(op: MaintainOp = "all"): Promise<MaintainRe
     } catch {
       // tabelul nu există încă (before DDL v19) — non-blocant
       report.clusterNodesDeleted = 0;
+    }
+  }
+  if (op === "all" || op === "cleanup_social_cache") {
+    // FAZA 20b — cache L2 social expirate (convenție identică cu search_cache)
+    try {
+      const { cleanupSocialCache } = await import("@/lib/social");
+      report.socialCacheDeleted = await cleanupSocialCache();
+    } catch {
+      report.socialCacheDeleted = 0;
     }
   }
   return report;

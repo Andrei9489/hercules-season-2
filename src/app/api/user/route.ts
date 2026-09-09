@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, getUserIdByEmail } from "@/lib/auth";
 import { q, qOne } from "@/lib/pg";
 import { invalidateRecommendations } from "@/lib/recommendations";
+import { recordActivity } from "@/lib/social";
 
 type MediaRef = {
   mediaId: string;
@@ -74,6 +75,32 @@ export async function POST(req: NextRequest) {
     // (invalidare L2 fire-and-forget la orice scriere de semnale)
     if (kind === "favorites" || kind === "watchlist" || kind === "history") {
       void invalidateRecommendations(userId).catch(() => {});
+    }
+
+    // Faza 20b — semnale sociale reale în feed (fire-and-forget, nu blochează răspunsul)
+    if (media && kind === "history") {
+      void recordActivity(userId, "watch", {
+        mediaId: media.mediaId, mediaType: media.mediaType,
+        title: media.title, poster: media.poster, progress: body.progress ?? 0,
+      }).catch(() => {});
+    }
+    if (media && kind === "watchlist" && (action === "add" || action === "toggle")) {
+      void recordActivity(userId, "list_add", {
+        mediaId: media.mediaId, mediaType: media.mediaType,
+        title: media.title, poster: media.poster, list: "watchlist",
+      }).catch(() => {});
+    }
+    if (media && kind === "favorites" && (action === "add" || action === "toggle")) {
+      void recordActivity(userId, "list_add", {
+        mediaId: media.mediaId, mediaType: media.mediaType,
+        title: media.title, poster: media.poster, list: "favorites",
+      }).catch(() => {});
+    }
+    if (media && kind === "reviews" && action === "add") {
+      void recordActivity(userId, "review", {
+        mediaId: media.mediaId, mediaType: media.mediaType,
+        title: media.title, poster: media.poster, rating: body.rating ?? null,
+      }).catch(() => {});
     }
 
     if (kind === "profiles") {

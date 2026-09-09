@@ -1,4 +1,4 @@
-// FAZA 18b — inițializare idempotentă DDL v18 (ai_recommend_cache + recommend_log)
+// FAZA 20b — inițializare idempotentă DDL v20 (strat social în Neon)
 import { readFileSync } from "node:fs";
 import { Pool } from "@neondatabase/serverless";
 
@@ -7,7 +7,7 @@ const url = (process.env.NEON_DATABASE_URL || "").startsWith("postgres")
   : "postgresql://neondb_owner:npg_k8zGXZEKr5xV@ep-sparkling-leaf-b2wkkjbz-pooler.c-6.eu-central-1.aws.neon.tech/neondb?sslmode=require";
 
 async function main() {
-  const sql = readFileSync("scripts/neon-v18.sql", "utf8");
+  const sql = readFileSync("scripts/neon-v20.sql", "utf8");
   const statements = sql
     .split(/;\s*\n/)
     .map((s) => s.replace(/^--[^\n]*\n/gm, "").trim())
@@ -24,11 +24,14 @@ async function main() {
       process.exitCode = 1;
     }
   }
-  console.log(`DDL v18: ${okCount}/${statements.length} statemente OK`);
+  console.log(`DDL v20: ${okCount}/${statements.length} statemente OK`);
 
-  // verificare live
   const chk = await pool.query(
-    `SELECT to_regclass('ai_recommend_cache') AS cache, to_regclass('recommend_log') AS log`
+    `SELECT to_regclass('social_comment') AS comments,
+            to_regclass('social_reaction') AS reactions,
+            to_regclass('social_follow') AS follows,
+            to_regclass('social_activity') AS activity,
+            to_regclass('social_cache') AS cache`
   );
   console.log("Verificare:", chk.rows[0]);
   await pool.end();

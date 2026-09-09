@@ -16,6 +16,7 @@ import { api } from "./api";
 import { Row } from "./Row";
 import { MediaCard } from "./MediaCard";
 import { CapacityPanel } from "./CapacityPanel";
+import { ActivityFeed } from "./ActivityFeed";
 import { LibraryAddDialog } from "./LibraryAddDialog";
 import { AIHub } from "./AIHub";
 import { PlayCircle, PlusCircle, Sparkles, UploadCloud, Globe2, Database } from "lucide-react";
@@ -129,6 +130,7 @@ export function HomeView({ onPlay, onOpen, onNavigate, isSaved, onToggleList, au
       </section>
 
       <div className="relative z-10 space-y-7 pt-6">
+        <ActivityFeed authed={authed} />
         <CapacityPanel />
 
         {/* BIBLIOTECA UTILIZATORULUI */}

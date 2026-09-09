@@ -11,6 +11,7 @@ import { toast } from "@/hooks/use-toast";
 import type { MediaItem, DetailData, Collection } from "./types";
 import { api } from "./api";
 import { MEDIA_TYPE_LABEL } from "./MediaCard";
+import { CommentsPanel } from "./CommentsPanel";
 
 type SubtitleRow = { id: string; release: string; fileName: string; downloads: number };
 
@@ -373,6 +374,9 @@ export function DetailModal({ item, open, onClose, onPlay, onOpenItem, isSaved, 
                   {sending ? "Se trimite..." : "Trimite evaluarea"}
                 </Button>
               </div>
+
+              {/* FAZA 20b — comentarii sociale reale din Neon */}
+              <CommentsPanel mediaId={item.id} mediaType={item.mediaType} authed={authed} />
             </>
           )}
         </div>
