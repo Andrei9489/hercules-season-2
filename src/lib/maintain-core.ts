@@ -5,13 +5,23 @@
 //   • cleanup_cache     — rândurile expirate din search_cache (L2 distribuit)
 //   • refresh_rollup    — re-materializează bucket-ele de sugestii 1-3
 //   • stats             — raport de sănătate (partiții, cache, dimensiune DB)
+// FAZA 18:
+//   • probe_regions     — ping LIVE pe toate regiunile multi-region +health în Neon
+//   • cleanup_recommend_cache — payload-uri recomandări expirate
 // Extras din /api/maintain pentru a putea fi apelat și de cron-ul intern
 // (instrumentation → maintain-scheduler), fără auto-apel HTTP.
 // ============================================================
 import { q, qRead } from "@/lib/pg";
 import { invalidateSearchCache } from "@/lib/neon-search";
 
-export type MaintainOp = "all" | "ensure_partitions" | "cleanup_cache" | "refresh_rollup" | "stats";
+export type MaintainOp =
+  | "all"
+  | "ensure_partitions"
+  | "cleanup_cache"
+  | "refresh_rollup"
+  | "probe_regions"
+  | "cleanup_recommend_cache"
+  | "stats";
 export type MaintainReport = Record<string, unknown>;
 
 /** creează partițiile search_logs lipsă pentru anii [year..year+ahead] */
@@ -96,6 +106,32 @@ export async function runMaintenance(op: MaintainOp = "all"): Promise<MaintainRe
   }
   if (op === "all" || op === "stats") {
     report.stats = await stats();
+  }
+  if (op === "all" || op === "probe_regions") {
+    // FAZA 18a — sănătate multi-region auto-actualizată (fără intervenție ops):
+    // probe SELECT 1 pe fiecare endpoint configurat → update în Neon (regions.health)
+    try {
+      const { probeAllRegions } = await import("@/lib/regions");
+      const probes = await probeAllRegions();
+      report.regions = {
+        probed: probes.length,
+        ok: probes.filter((p) => p.ok).length,
+        detail: probes,
+      };
+    } catch (e) {
+      report.regions = { error: String(e).slice(0, 200) };
+    }
+  }
+  if (op === "all" || op === "cleanup_recommend_cache") {
+    try {
+      const r = await q(
+        `DELETE FROM ai_recommend_cache WHERE expires_at < now() RETURNING cache_key`
+      );
+      report.recommendCacheDeleted = r.length;
+    } catch {
+      // tabelul nu există încă (before DDL v18) — non-blocant
+      report.recommendCacheDeleted = 0;
+    }
   }
   return report;
 }

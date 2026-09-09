@@ -16,6 +16,7 @@
 // ============================================================
 import { q, qOne } from "./pg";
 import { normalizeRo, invalidateSearchCache } from "./neon-search";
+import { invalidateGlobalRecommendations } from "./recommendations";
 import {
   getActiveShards,
   shardQuery,
@@ -420,6 +421,7 @@ export async function deleteContentByIds(
   ).catch(() => {});
 
   invalidateSearchCache();
+  void invalidateGlobalRecommendations().catch(() => {});
   void localShard;
   return { deleted, local: localIds.length, remote, missing, detail };
 }

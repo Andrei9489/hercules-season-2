@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, getUserIdByEmail } from "@/lib/auth";
 import { q, qOne } from "@/lib/pg";
+import { invalidateRecommendations } from "@/lib/recommendations";
 
 type MediaRef = {
   mediaId: string;
@@ -68,6 +69,12 @@ export async function POST(req: NextRequest) {
       profile?: { name: string; avatar?: string; color?: string; isKid?: boolean };
     };
     const { action, kind, media } = body;
+
+    // Faza 18b — recomandările personalizate se recalculează la următoarea cerere
+    // (invalidare L2 fire-and-forget la orice scriere de semnale)
+    if (kind === "favorites" || kind === "watchlist" || kind === "history") {
+      void invalidateRecommendations(userId).catch(() => {});
+    }
 
     if (kind === "profiles") {
       if (action === "add" && body.profile) {

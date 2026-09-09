@@ -11,6 +11,7 @@
 // ============================================================
 import { q, qOne, qRead, AdmissionRejected, DbUnavailable } from "./pg";
 import { qReadRegion } from "./regions";
+import { invalidateGlobalRecommendations } from "./recommendations";
 import {
   getActiveShards,
   execOnAllShards,
@@ -815,6 +816,7 @@ export async function insertContent(c: NewContent): Promise<LibraryHit | null> {
       const hit = rows[0] ? mapHit(rows[0]) : null;
       if (hit) await shardMapUpsert(c.externalId, shard.id, hit.id);
       invalidateSearchCache("sl:");
+      void invalidateGlobalRecommendations().catch(() => {});
       return hit;
     } catch (e) {
       console.error(`[shards] insert pe ${shard.name} eșuat, fallback pe primar:`, String(e).slice(0, 120));
@@ -825,6 +827,7 @@ export async function insertContent(c: NewContent): Promise<LibraryHit | null> {
   const [sql, params] = contentInsertValues(c);
   const rows = await q<Record<string, unknown>>(sql, params);
   invalidateSearchCache("sl:");
+  void invalidateGlobalRecommendations().catch(() => {});
   return rows[0] ? mapHit(rows[0]) : null;
 }
 

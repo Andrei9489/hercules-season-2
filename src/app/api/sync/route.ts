@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, getUserIdByEmail } from "@/lib/auth";
 import { q, qOne } from "@/lib/pg";
 import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
+import { invalidateRecommendations } from "@/lib/recommendations";
 
 // ============================================================
 // FAZA 14 — NEON SYNC HUB
@@ -382,6 +383,11 @@ export async function POST(req: NextRequest) {
     );
   } catch (e) {
     console.error("sync_log insert failed:", e);
+  }
+
+  // Faza 18b — semnalele sincronizate offline schimbă profilul de recomandări
+  if (pushed > 0) {
+    void invalidateRecommendations(userId).catch(() => {});
   }
 
   return NextResponse.json({ ok: failed === 0, pushed, skipped, failed, results, durationMs });
