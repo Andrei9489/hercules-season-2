@@ -10,6 +10,7 @@ import {
   dedupeGroups,
   duplicateQuickCount,
 } from "@/lib/duplicates";
+import { errMsg } from "@/lib/utils";
 import { shardsStatus } from "@/lib/shards";
 
 // ============================================================
@@ -66,11 +67,15 @@ export async function GET(req: NextRequest) {
 
     if (tab === "content") {
       params.push(limit, offset);
+      // FIX FAZA 39: interogarea primea SQL cu $1/$2 dar FĂRĂ vectorul de
+      // parametri → Postgres: „there is no parameter $2" → eroarea din panoul
+      // de gestionare. Se trimit acum explicit params (limit + offset + q).
       const rows = await q<ListRow>(
         `SELECT id, external_id, title, content_type, provider, source_type,
                 source_url, thumbnail, year, popularity, views, created_by, created_at
          FROM content WHERE ${where.join(" AND ")}
-         ORDER BY id DESC LIMIT $${params.length - 1} OFFSET $${params.length}`
+         ORDER BY id DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+        params
       );
       const total = await qOne<{ n: string }>(
         `SELECT count(*)::text AS n FROM content WHERE ${where.join(" AND ")}`,
@@ -109,7 +114,8 @@ export async function GET(req: NextRequest) {
     try {
       rows = await q<ListRow>(listSql, params);
     } catch (err) {
-      return NextResponse.json({ ok: false, error: String(err) }, { status: 500 });
+      console.error("[manage] listare postere eșuată:", errMsg(err));
+      return NextResponse.json({ ok: false, error: errMsg(err) }, { status: 500 });
     }
     const total = await qOne<{ n: string }>(
       `SELECT count(*)::text AS n FROM content WHERE ${where.join(" AND ")}`,
@@ -134,7 +140,8 @@ export async function GET(req: NextRequest) {
       offset,
     });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
+    console.error("[manage] GET eșuat:", errMsg(e));
+    return NextResponse.json({ ok: false, error: errMsg(e) }, { status: 500 });
   }
 }
 
@@ -200,6 +207,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ error: "unknown-action", ops: ["check", "delete", "dedupe"] }, { status: 400 });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
+    console.error("[manage] POST eșuat:", errMsg(e));
+    return NextResponse.json({ ok: false, error: errMsg(e) }, { status: 500 });
   }
 }

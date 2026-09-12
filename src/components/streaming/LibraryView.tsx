@@ -46,6 +46,11 @@ type Props = {
   type?: string;          // filtru content_type (ex: movie, series, anime...)
   brand?: string;         // filtru brand fix (ex: marvel)
   brands?: [string, string][]; // tab-uri brand (Copii: Disney, Jetix...)
+  // FAZA 39 — filtre pentru submeniuri (TV & Show-biz: categorie, Lumea: continent)
+  category?: string;      // filtru category fix (ex: reality)
+  continent?: string;     // filtru continent fix (ex: Europa)
+  onClearCategory?: () => void;
+  onClearContinent?: () => void;
   onOpen: (i: MediaItem) => void;
   onPlay: (i: MediaItem) => void;
   isSaved: (i: MediaItem, k: "watchlist" | "favorites") => boolean;
@@ -61,7 +66,8 @@ function pageWindow(current: number, total: number): number[] {
 }
 
 export function LibraryView({
-  title, emoji, description, type, brand, brands, onOpen, onPlay, isSaved, onToggleList, onAdd,
+  title, emoji, description, type, brand, brands, category, continent,
+  onClearCategory, onClearContinent, onOpen, onPlay, isSaved, onToggleList, onAdd,
 }: Props) {
   const [items, setItems] = useState<BrowseItem[]>([]);
   const [page, setPage] = useState(1);
@@ -79,6 +85,8 @@ export function LibraryView({
       const qs = new URLSearchParams({ page: String(p), sort });
       if (type) qs.set("type", type);
       if (activeBrand) qs.set("brand", activeBrand);
+      if (category) qs.set("category", category);
+      if (continent) qs.set("continent", continent);
       const r = await api.browse<BrowseResp>(qs.toString());
       setItems(r.items || []);
       setTotal(r.total);
@@ -91,7 +99,7 @@ export function LibraryView({
     } finally {
       setLoading(false);
     }
-  }, [type, activeBrand, sort]);
+  }, [type, activeBrand, sort, category, continent]);
 
   useEffect(() => { load(1); }, [load]);
 
@@ -140,6 +148,28 @@ export function LibraryView({
           </button>
         </div>
       </div>
+
+      {/* FAZA 39 — chip filtru activ din submeniu (categorie / continent) */}
+      {(category || continent) && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          {category && (
+            <span className="flex items-center gap-1.5 rounded-full bg-red-600/15 px-3 py-1 text-xs font-bold text-red-300 ring-1 ring-red-600/40" data-filter-chip>
+              categorie: {category}
+              {onClearCategory && (
+                <button onClick={onClearCategory} aria-label="Șterge filtrul de categorie" className="text-red-400 hover:text-red-200">✕</button>
+              )}
+            </span>
+          )}
+          {continent && (
+            <span className="flex items-center gap-1.5 rounded-full bg-sky-600/15 px-3 py-1 text-xs font-bold text-sky-300 ring-1 ring-sky-600/40" data-filter-chip>
+              continent: {continent}
+              {onClearContinent && (
+                <button onClick={onClearContinent} aria-label="Șterge filtrul de continent" className="text-sky-400 hover:text-sky-200">✕</button>
+              )}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* tab-uri brand (ex: Copii → Disney / Jetix / Fox Kids...) */}
       {brands && brands.length > 0 && (

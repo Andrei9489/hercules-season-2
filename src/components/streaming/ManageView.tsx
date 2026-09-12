@@ -88,8 +88,12 @@ export function ManageView() {
       }
       setOffset(off);
       setSelected(new Set());
-    } catch {
-      toast({ title: "Eroare la încărcarea bibliotecii", variant: "destructive" });
+    } catch (e) {
+      toast({
+        title: "Eroare la încărcarea bibliotecii",
+        description: String((e as { message?: string })?.message || e).slice(0, 200),
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
@@ -112,7 +116,7 @@ export function ManageView() {
         });
       }
     } catch {
-      toast({ title: "Eroare la scanarea duplicatelor", variant: "destructive" });
+      toast({ title: "Eroare la scanarea duplicatelor", description: "Verifică conexiunea și reîncearcă scanarea.", variant: "destructive" });
     } finally {
       setScanning(false);
     }

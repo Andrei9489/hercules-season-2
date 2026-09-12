@@ -11,6 +11,7 @@ import { parseSigningConfig } from "@/lib/stream-sign";
 import { parseM3U, normalizeM3UInputUrl, type M3UChannel } from "@/lib/m3u-parser";
 import { rateLimit, clientIp, tooMany } from "@/lib/rate-limit";
 import { withCache } from "@/lib/http-cache";
+import { errMsg } from "@/lib/utils";
 
 import { wrapMetrics } from "@/lib/http-cache";
 type Item = Record<string, unknown>;
@@ -123,7 +124,7 @@ async function getHandler(req: NextRequest) {
       hits = rows.map(rowToHit);
     }
   } catch (e) {
-    return NextResponse.json({ error: "db", message: String(e) }, { status: 500 });
+    return NextResponse.json({ error: "db", message: errMsg(e) }, { status: 500 });
   }
 
   const total = await qOne<{ n: string }>(`SELECT count(*)::text AS n FROM content`).catch(() => null);
@@ -224,6 +225,10 @@ export async function POST(req: NextRequest) {
 
     const contentType = String(body.contentType || "video");
     const brand = body.brand ? String(body.brand) : null;
+    // FAZA 39 — destinație explicită: category/continent din selectorul de meniu
+    // (fără destinație, category rămâne = contentType — comportamentul vechi)
+    const category = body.category ? String(body.category) : contentType;
+    const continent = body.continent ? String(body.continent) : undefined;
     const country = body.country ? String(body.country) : null;
     const language = body.language ? String(body.language) : "en";
     const year = body.year ? Number(body.year) : null;
@@ -297,7 +302,8 @@ export async function POST(req: NextRequest) {
         description: description || `Conținut încărcat de utilizator — ${resolved.providerLabel}.`,
         contentType,
         brand,
-        category: contentType,
+        category,
+        continent,
         country,
         language,
         provider: resolved.provider,
@@ -320,6 +326,9 @@ export async function POST(req: NextRequest) {
 
       if (inserted) sessionSaved.push(inserted);
       else failed.push(input.slice(0, 80));
+    }
+    if (failed.length && sessionSaved.length === 0) {
+      console.error("[library] add: toate inserările au eșuat (rețea/DB) —", failed.length, "elemente");
     }
 
     return NextResponse.json({

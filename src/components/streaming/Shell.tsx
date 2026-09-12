@@ -85,6 +85,8 @@ export function Shell() {
   // Faza 4: parametri pentru meniurile avansate (tab/brand/continent)
   const [universuriTab, setUniversuriTab] = useState("marvel");
   const [showbizTab, setShowbizTab] = useState("divertisment");
+  // FAZA 39 — categorie Show-biz activă din submeniu ("" = toate — meniul principal)
+  const [showbizCat, setShowbizCat] = useState("");
   const [kidsBrand, setKidsBrand] = useState("disney");
   const [newsContinent, setNewsContinent] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -203,6 +205,10 @@ export function Shell() {
 
   const navigate = useCallback((v: string) => {
     setView(v as ViewKey);
+    // FAZA 39 — click pe meniul principal = filtrul de submeniu se șterge
+    // (Știri arată toate continentele, TV & Show-biz toate categoriile)
+    setNewsContinent("");
+    setShowbizCat("");
     setSidebarOpen(false);
     window.scrollTo({ top: 0 });
   }, []);
@@ -210,7 +216,7 @@ export function Shell() {
   // Faza 4: navigare din meniurile avansate — setează parametrul view-ului țintă
   const navigateExtra = useCallback((item: ExtraItem) => {
     if (item.view === "universuri") setUniversuriTab(item.param);
-    else if (item.view === "showbiz") setShowbizTab(item.param);
+    else if (item.view === "showbiz") { setShowbizTab(item.param); setShowbizCat(item.param); }
     else if (item.view === "copii") setKidsBrand(item.param);
     else if (item.view === "stiri") setNewsContinent(item.param);
     setView(item.view);
@@ -595,8 +601,8 @@ export function Shell() {
             type="gaming" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "stiri" && (
-          <LibraryView key="stiri" title="Știri" emoji="📰" description="Canale de știri și jurnale din întreaga lume."
-            type="news" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+          <LibraryView key={`stiri-${newsContinent}`} title="Știri" emoji="📰" description={newsContinent ? `Canale de știri și jurnale — ${newsContinent}.` : "Canale de știri și jurnale din întreaga lume."}
+            type="news" continent={newsContinent || undefined} onClearContinent={() => setNewsContinent("")} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "radio" && (
           <LibraryView key="radio" title="Radio Live" emoji="📻" description="Posturi de radio adăugate de tine."
@@ -612,8 +618,8 @@ export function Shell() {
             brand={universuriTab} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "showbiz" && (
-          <LibraryView key={`sb-${showbizTab}`} title="TV & Show-biz" emoji="⭐" description="Emisiuni, reality TV și divertisment."
-            type="showbiz" onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
+          <LibraryView key={`sb-${showbizCat || "all"}`} title="TV & Show-biz" emoji="⭐" description={showbizCat ? `Categorie: ${showbizCat}.` : "Emisiuni, reality TV și divertisment."}
+            type="showbiz" category={showbizCat || undefined} onClearCategory={() => setShowbizCat("")} onPlay={openPlayer} onOpen={openDetail} isSaved={isSaved} onToggleList={toggleList} onAdd={() => setAddOpen(true)} />
         )}
         {view === "lista" && (
           <MyListView

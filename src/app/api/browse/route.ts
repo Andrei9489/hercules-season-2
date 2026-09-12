@@ -43,13 +43,16 @@ async function getHandler(req: NextRequest) {
   const size = Math.min(20, Math.max(20, Number(sp.get("size")) || 20)); // FIX: 20 postere
   const type = (sp.get("type") || "").trim();
   const brand = (sp.get("brand") || "").trim();
+  // FAZA 39 — filtre pentru submeniuri: category (TV & Show-biz) + continent (Lumea)
+  const category = (sp.get("category") || "").trim();
+  const continent = (sp.get("continent") || "").trim();
   const taxKind = (sp.get("tax") || "").trim();
   const slug = (sp.get("slug") || "").trim();
   const search = (sp.get("q") || "").trim();
   const sort = SORTS[(sp.get("sort") || "popularity")] || SORTS.popularity;
   const offset = (page - 1) * size;
   // Faza 10 — cheie L1 per combinație de filtre (cache in-memory per instanță)
-  const l1Key = `browse:${type || "all"}|${brand}|${taxKind}|${slug}|${search}|${sort}|${page}`;
+  const l1Key = `browse:${type || "all"}|${brand}|${category}|${continent}|${taxKind}|${slug}|${search}|${sort}|${page}`;
 
   const where: string[] = ["TRUE"];
   const params: unknown[] = [];
@@ -72,6 +75,8 @@ async function getHandler(req: NextRequest) {
     where.push(`(${cond})`);
   }
   if (brand) { params.push(brand); where.push(`c.brand = $${params.length}`); }
+  if (category) { params.push(category); where.push(`c.category = $${params.length}`); }
+  if (continent) { params.push(continent); where.push(`c.continent = $${params.length}`); }
   if (search) { params.push(`%${search}%`); where.push(`c.search_text LIKE $${params.length}`); }
   let joinTax = "";
   if (taxKind && slug) {

@@ -38,7 +38,92 @@ const TYPES = [
   ["showbiz", "Show-biz"], ["telenovela", "Telenovelă"],
 ];
 
-const BRANDS = ["", "marvel", "dc", "disney", "pixar", "cartoon-network", "jetix", "fox-kids", "boomerang", "minimax", "ghibli"];
+// ============================================================
+// FAZA 39 — DESTINAȚII = TOATE MENIURILE DIN SIDEBAR
+// Al doilea selector („— fără brand —") devine un selector complet de
+// DESTINAȚIE: utilizatorul alege în CE meniu al platformei ajunge
+// conținutul încărcat — peste opțiunile de brand existente.
+// Fiecare destinație setează automat câmpurile reale din Neon:
+//   content_type / brand / category / continent
+// (exact filtrele după care meniurile listează prin /api/browse).
+// ============================================================
+type Destination = {
+  key: string;
+  label: string;
+  type?: string;      // → content_type
+  brand?: string;     // → brand (univers / canal kids)
+  category?: string;  // → category (submeniurile TV & Show-biz)
+  continent?: string; // → continent (submeniurile Lumea — Știri)
+};
+
+const DEST_GROUPS: { group: string; items: Destination[] }[] = [
+  {
+    group: "General",
+    items: [{ key: "none", label: "— fără brand —" }],
+  },
+  {
+    group: "📁 Meniuri principale",
+    items: [
+      { key: "filme", label: "🎬 Filme", type: "movie" },
+      { key: "seriale", label: "📺 Seriale", type: "series" },
+      { key: "anime", label: "🌸 Anime", type: "anime" },
+      { key: "copii", label: "🧸 Copii & Desene", type: "cartoon" },
+      { key: "muzica", label: "🎵 Muzică", type: "music" },
+      { key: "documentare", label: "🌍 Documentare", type: "documentary" },
+      { key: "telenovele", label: "🌹 Telenovele", type: "telenovela" },
+      { key: "sport", label: "🏆 Sport", type: "sport" },
+      { key: "gaming", label: "🎮 Gaming", type: "gaming" },
+      { key: "stiri", label: "📰 Știri", type: "news" },
+      { key: "radio", label: "📻 Radio Live", type: "radio" },
+      { key: "fun", label: "😄 Distracție", type: "video" },
+      { key: "showbiz", label: "⭐ TV & Show-biz", type: "showbiz" },
+    ],
+  },
+  {
+    group: "🦸 Universuri",
+    items: [
+      { key: "marvel", label: "🦸 Marvel", brand: "marvel" },
+      { key: "dc", label: "🦇 DC", brand: "dc" },
+      { key: "blockbuster", label: "💥 Blockbustere", brand: "blockbuster" },
+    ],
+  },
+  {
+    group: "🧸 Canale Kids",
+    items: [
+      { key: "disney", label: "🏰 Disney", brand: "disney" },
+      { key: "pixar", label: "💡 Pixar", brand: "pixar" },
+      { key: "jetix", label: "⚡ Jetix", brand: "jetix" },
+      { key: "fox-kids", label: "🦊 Fox Kids", brand: "fox-kids" },
+      { key: "cartoon-network", label: "📺 Cartoon Network", brand: "cartoon-network" },
+      { key: "boomerang", label: "🪃 Boomerang", brand: "boomerang" },
+      { key: "minimax", label: "🎈 Minimax", brand: "minimax" },
+      { key: "ghibli", label: "🌱 Ghibli", brand: "ghibli" },
+    ],
+  },
+  {
+    group: "⭐ TV & Show-biz — categorii",
+    items: [
+      { key: "sb-divertisment", label: "🎭 Divertisment", type: "showbiz", category: "divertisment" },
+      { key: "sb-showbiz", label: "🌟 Show-biz", type: "showbiz", category: "showbiz" },
+      { key: "sb-reality", label: "🎤 Reality TV", type: "showbiz", category: "reality" },
+      { key: "sb-emisiuni", label: "🎙️ Emisiuni TV", type: "showbiz", category: "emisiuni" },
+    ],
+  },
+  {
+    group: "🌍 Lumea — continente (Știri)",
+    items: [
+      { key: "europa", label: "🇪🇺 Europa", type: "news", continent: "Europa" },
+      { key: "america-nord", label: "🌎 America de Nord", type: "news", continent: "America de Nord" },
+      { key: "america-sud", label: "🌏 America de Sud", type: "news", continent: "America de Sud" },
+      { key: "asia", label: "🏯 Asia", type: "news", continent: "Asia" },
+      { key: "africa", label: "🌍 Africa", type: "news", continent: "Africa" },
+      { key: "oceania", label: "🏝️ Oceania", type: "news", continent: "Oceania" },
+    ],
+  },
+];
+
+const ALL_DEST: Destination[] = DEST_GROUPS.flatMap((g) => g.items);
+const destByKey = (key: string): Destination => ALL_DEST.find((d) => d.key === key) || ALL_DEST[0];
 
 /** Împarte textarea-ul pe linii — fiecare linie = o sursă (URL sau cod embed). */
 function splitSources(text: string): string[] {
@@ -81,7 +166,8 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
   const [year, setYear] = useState("");
   const [genres, setGenres] = useState("");
   const [type, setType] = useState("video");
-  const [brand, setBrand] = useState("");
+  // FAZA 39 — destinația aleasă (meniu sidebar) → brand/category/continent reale
+  const [destination, setDestination] = useState("none");
   const [country, setCountry] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -177,9 +263,21 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
     return () => { cancelled = true; clearTimeout(t); };
   }, [mode, lines, detected, title, type]);
 
+  // FAZA 39 — destinația efectivă: câmpurile reale trimise la salvare
+  const dest = destByKey(destination);
+
+  // La alegerea unei destinații care implică un tip (ex: „Filme" → movie),
+  // tipul se sincronizează automat — utilizatorul îl poate schimba apoi liber
+  // (destinațiile pe brand NU forțează tipul: apar în meniu indiferent de tip).
+  const pickDestination = (key: string) => {
+    setDestination(key);
+    const d = destByKey(key);
+    if (d.type) setType(d.type);
+  };
+
   const reset = () => {
     setInput(""); setTitle(""); setPosterUrl(""); setDescription("");
-    setYear(""); setGenres(""); setType("video"); setBrand(""); setCountry("");
+    setYear(""); setGenres(""); setType("video"); setDestination("none"); setCountry("");
     setSecOn(false); setSecSecret(""); setSecParam("token"); setSecType("query"); setSecTtl("300");
     setM3uText(""); setM3uUrl("");
     setDupWarn(null); setForceAdd(false);
@@ -208,7 +306,9 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
         year: year.trim() || undefined,
         genres: genres.trim() || undefined,
         contentType: type,
-        brand: brand || undefined,
+        brand: dest.brand || undefined,
+        category: dest.category || undefined,
+        continent: dest.continent || undefined,
         country: country.trim() || undefined,
         signing,
         force: forceAdd || undefined,
@@ -376,15 +476,37 @@ export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
               >
                 {TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
+              {/* FAZA 39 — destinație = TOATE meniurile din sidebar */}
               <select
-                value={brand}
-                onChange={(e) => setBrand(e.target.value)}
-                aria-label="Brand / univers"
+                value={destination}
+                onChange={(e) => pickDestination(e.target.value)}
+                aria-label="Destinație (meniul în care apare conținutul)"
                 className="h-9 rounded-lg border border-zinc-800 bg-zinc-900 px-2 text-sm text-zinc-200"
+                data-destination-select
               >
-                {BRANDS.map((b) => <option key={b || "none"} value={b}>{b ? b.replace(/-/g, " ") : "— fără brand —"}</option>)}
+                {DEST_GROUPS.map((g) => (
+                  <optgroup key={g.group} label={g.group}>
+                    {g.items.map((d) => (
+                      <option key={d.key} value={d.key}>{d.label}</option>
+                    ))}
+                  </optgroup>
+                ))}
               </select>
             </div>
+
+            {/* hint destinație activă — unde ajunge exact conținutul */}
+            {destination !== "none" && (
+              <div className="flex items-center gap-2 rounded-lg bg-emerald-500/10 px-3 py-1.5 text-[11px] text-emerald-300 ring-1 ring-emerald-600/30" data-destination-hint>
+                <span>🎯 Destinație: <b>{dest.label}</b></span>
+                <span className="text-emerald-400/70">
+                  {dest.brand ? `brand „${dest.brand}”` : ""}
+                  {dest.category ? `${dest.brand ? " • " : ""}categorie „${dest.category}”` : ""}
+                  {dest.continent ? `${dest.brand || dest.category ? " • " : ""}continent „${dest.continent}”` : ""}
+                  {dest.type && !dest.brand && !dest.category && !dest.continent ? `tip „${dest.type}”` : ""}
+                  {" — apare direct în meniul ales"}
+                </span>
+              </div>
+            )}
 
             <div className="grid grid-cols-3 gap-2">
               <Input

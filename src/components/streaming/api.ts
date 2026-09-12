@@ -1,11 +1,25 @@
 "use client";
 
 // Helperi de fetch pentru API-urile interne
+// Faza 39: erorile NU mai sunt opace — mesajul real din corpul răspunsului
+// (câmpurile error/message) ajunge în exception, deci în toast-urile UI.
 import { enqueueOfflineWrite } from "@/lib/sync-outbox";
+
+/** Extrage mesajul real dintr-un răspuns de eroare JSON al serverului. */
+async function apiError(res: Response): Promise<Error> {
+  let detail = "";
+  try {
+    const j = (await res.json()) as { error?: unknown; message?: unknown };
+    const e = typeof j?.error === "string" ? j.error : "";
+    const m = typeof j?.message === "string" ? j.message : "";
+    detail = [e, m].filter(Boolean).join(" — ");
+  } catch { /* corp non-JSON */ }
+  return new Error(detail ? `API ${res.status}: ${detail}` : `API ${res.status}`);
+}
 
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) throw new Error(`API ${res.status}`);
+  if (!res.ok) throw await apiError(res);
   return res.json();
 }
 
@@ -34,7 +48,7 @@ async function post<T>(url: string, body: unknown): Promise<T> {
     }
     throw err;
   }
-  if (!res.ok) throw new Error(`API ${res.status}`);
+  if (!res.ok) throw await apiError(res);
   return res.json();
 }
 
