@@ -1,0 +1,575 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→// ============================================================
+     4→     4→// LibraryAddDialog — STUDIOUL DE ÎNCĂRCARE UNIVERSAL (Faza 8+9)
+     5→     5→// Utilizatorul încarcă conținutul REAL al platformei:
+     6→     6→//   • link direct: MP4 / WebM / HLS (.m3u8) / DASH (.mpd)
+     7→     7→//   • platforme: YouTube, OK.ru, Vimeo, TikTok, Dailymotion,
+     8→     8→//     Rumble, Twitch, Facebook, VK, Streamable, Drive, Bilibili...
+     9→     9→//   • cod embed: <iframe> / <script> / <object> / <video>
+    10→    10→//   • orice sursă necunoscută → iframe generic cu fallback extern
+    11→    11→//   • PLAYLIST M3U/M3U8 (Faza 9): paste conținut sau URL → canale
+    12→    12→//     TV/radio cu tvg-logo, group-title multi-categorii, calitate,
+    13→    13→//     [Geo-blocked]/[Not 24/7] → bulk idempotent în Neon
+    14→    14→// MOD BULK: un element pe linie (max 50 / batch) — metadatele
+    15→    15→// comune (tip / brand / țară / an / genuri) se aplică tuturor.
+    16→    16→// Metadatele se salvează în NEON — nimic local.
+    17→    17→// ============================================================
+    18→    18→
+    19→    19→import { useEffect, useMemo, useState } from "react";
+    20→    20→import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+    21→    21→import { Input } from "@/components/ui/input";
+    22→    22→import { toast } from "@/hooks/use-toast";
+    23→    23→import { resolveSource, titleFromUrl } from "@/lib/source-resolver";
+    24→    24→import { parseM3U } from "@/lib/m3u-parser";
+    25→    25→import type { LibraryItem } from "./types";
+    26→    26→import { api } from "./api";
+    27→    27→
+    28→    28→type Props = {
+    29→    29→  open: boolean;
+    30→    30→  onClose: () => void;
+    31→    31→  onAdded: (item?: LibraryItem) => void;
+    32→    32→};
+    33→    33→
+    34→    34→const TYPES = [
+    35→    35→  ["video", "Video"], ["movie", "Film"], ["series", "Serial"], ["anime", "Anime"],
+    36→    36→  ["cartoon", "Desene animate"], ["documentary", "Documentar"], ["music", "Muzică"],
+    37→    37→  ["sport", "Sport"], ["gaming", "Gaming"], ["news", "Știri"], ["radio", "Radio"],
+    38→    38→  ["showbiz", "Show-biz"], ["telenovela", "Telenovelă"],
+    39→    39→];
+    40→    40→
+    41→    41→const BRANDS = ["", "marvel", "dc", "disney", "pixar", "cartoon-network", "jetix", "fox-kids", "boomerang", "minimax", "ghibli"];
+    42→    42→
+    43→    43→/** Împarte textarea-ul pe linii — fiecare linie = o sursă (URL sau cod embed). */
+    44→    44→function splitSources(text: string): string[] {
+    45→    45→  return text
+    46→    46→    .split(/\n+/)
+    47→    47→    .map((l) => l.trim())
+    48→    48→    .filter(Boolean);
+    49→    49→}
+    50→    50→
+    51→    51→type M3UImportResult = {
+    52→    52→  ok: boolean;
+    53→    53→  playlistName: string;
+    54→    54→  parsed: number;
+    55→    55→  parsedRadio: number;
+    56→    56→  added: number;
+    57→    57→  duplicates: number;
+    58→    58→  skipped: number;
+    59→    59→  errors: string[];
+    60→    60→  topGroups: { group: string; n: number }[];
+    61→    61→};
+    62→    62→
+    63→    63→// FAZA 16 — rezultatul gărzii de duplicate la salvare
+    64→    64→type DupInfo = { title: string; reason: string; id?: number };
+    65→    65→type AddResult = { added: number; duplicates: DupInfo[]; failed: string[]; items: LibraryItem[] };
+    66→    66→
+    67→    67→const REASON_LABEL: Record<string, string> = {
+    68→    68→  external_id: "același ID de sursă",
+    69→    69→  source: "același link / stream",
+    70→    70→  title: "titlu identic (același tip)",
+    71→    71→};
+    72→    72→
+    73→    73→export function LibraryAddDialog({ open, onClose, onAdded }: Props) {
+    74→    74→  const [mode, setMode] = useState<"sources" | "m3u">("sources");
+    75→    75→
+    76→    76→  // ---- mod SURSE (Faza 8) ----
+    77→    77→  const [input, setInput] = useState("");
+    78→    78→  const [title, setTitle] = useState("");
+    79→    79→  const [posterUrl, setPosterUrl] = useState("");
+    80→    80→  const [description, setDescription] = useState("");
+    81→    81→  const [year, setYear] = useState("");
+    82→    82→  const [genres, setGenres] = useState("");
+    83→    83→  const [type, setType] = useState("video");
+    84→    84→  const [brand, setBrand] = useState("");
+    85→    85→  const [country, setCountry] = useState("");
+    86→    86→  const [saving, setSaving] = useState(false);
+    87→    87→
+    88→    88→  // ---- Faza 10: ACCES SECURIZAT (token/HMAC/JWT) ----
+    89→    89→  const [secOn, setSecOn] = useState(false);
+    90→    90→  const [secType, setSecType] = useState("query");
+    91→    91→  const [secParam, setSecParam] = useState("token");
+    92→    92→  const [secSecret, setSecSecret] = useState("");
+    93→    93→  const [secTtl, setSecTtl] = useState("300");
+    94→    94→
+    95→    95→  // ---- mod PLAYLIST M3U (Faza 9) ----
+    96→    96→  const [m3uText, setM3uText] = useState("");
+    97→    97→  const [m3uUrl, setM3uUrl] = useState("");
+    98→    98→  const [importing, setImporting] = useState(false);
+    99→    99→
+   100→   100→  // ---- FAZA 16: gardă duplicate LIVE (alertă înainte de salvare) ----
+   101→   101→  const [dupWarn, setDupWarn] = useState<{ title: string; reason: string; id: number } | null>(null);
+   102→   102→  const [forceAdd, setForceAdd] = useState(false);
+   103→   103→
+   104→   104→  const lines = useMemo(() => splitSources(input), [input]);
+   105→   105→
+   106→   106→  const detected = useMemo(() => {
+   107→   107→    if (lines.length === 0) return null;
+   108→   108→    try {
+   109→   109→      return resolveSource(lines[0], { parent: typeof window !== "undefined" ? window.location.hostname : "" });
+   110→   110→    } catch {
+   111→   111→      return null;
+   112→   112→    }
+   113→   113→  }, [lines]);
+   114→   114→
+   115→   115→  const detectedCount = useMemo(() => {
+   116→   116→    let ok = 0;
+   117→   117→    for (const l of lines) {
+   118→   118→      try { if (resolveSource(l, {})) ok++; } catch { /* nerecunoscut */ }
+   119→   119→    }
+   120→   120→    return ok;
+   121→   121→  }, [lines]);
+   122→   122→
+   123→   123→  // preview parsare M3U client-side (parserul e server-safe = merge și în browser)
+   124→   124→  const m3uPreview = useMemo(() => {
+   125→   125→    if (mode !== "m3u" || !m3uText.trim()) return null;
+   126→   126→    try {
+   127→   127→      const r = parseM3U(m3uText);
+   128→   128→      const groups = new Map<string, number>();
+   129→   129→      for (const ch of r.channels) for (const g of ch.groups) groups.set(g, (groups.get(g) || 0) + 1);
+   130→   130→      return {
+   131→   131→        channels: r.channels.length,
+   132→   132→        radio: r.channels.filter((c) => c.isRadio).length,
+   133→   133→        playlistName: r.playlistName,
+   134→   134→        errors: r.errors,
+   135→   135→        topGroups: [...groups.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
+   136→   136→        sample: r.channels.slice(0, 4).map((c) => c.name),
+   137→   137→      };
+   138→   138→    } catch {
+   139→   139→      return null;
+   140→   140→    }
+   141→   141→  }, [mode, m3uText]);
+   142→   142→
+   143→   143→  // titlu automat din URL (doar în mod singular)
+   144→   144→  useEffect(() => {
+   145→   145→    if (mode !== "sources" || lines.length !== 1 || !lines[0] || title) return;
+   146→   146→    const d = detected;
+   147→   147→    if (!d) return;
+   148→   148→    const ref = d.kind === "html" ? "" : (d as { src?: string; url?: string }).src || (d as { url?: string }).url || "";
+   149→   149→    if (ref.startsWith("http")) setTitle(titleFromUrl(ref));
+   150→   150→  }, [mode, lines, detected, title]);
+   151→   151→
+   152→   152→  // FAZA 16 — verificare duplicat LIVE (debounce 450ms): dacă titlul + tipul
+   153→   153→  // sau sursa există deja în bibliotecă → ALERTĂ vizibilă înainte de salvare.
+   154→   154→  useEffect(() => {
+   155→   155→    if (mode !== "sources" || lines.length !== 1 || !lines[0]) {
+   156→   156→      setDupWarn(null);
+   157→   157→      return;
+   158→   158→    }
+   159→   159→    let cancelled = false;
+   160→   160→    const t = setTimeout(async () => {
+   161→   161→      try {
+   162→   162→        const d = detected;
+   163→   163→        const ref = d && d.kind !== "html" ? ((d as { src?: string; url?: string }).src || (d as { url?: string }).url || "") : "";
+   164→   164→        const effTitle = title.trim() || (ref ? titleFromUrl(ref) : lines[0].slice(0, 60));
+   165→   165→        const r = await api.managePost<{ duplicate: boolean; matches: { id: number; title: string; reason: string }[] }>({
+   166→   166→          action: "check",
+   167→   167→          title: effTitle,
+   168→   168→          contentType: type,
+   169→   169→          sourceUrl: ref || undefined,
+   170→   170→        });
+   171→   171→        if (cancelled) return;
+   172→   172→        setDupWarn(r.duplicate && r.matches[0] ? { title: r.matches[0].title, reason: r.matches[0].reason, id: r.matches[0].id } : null);
+   173→   173→      } catch {
+   174→   174→        if (!cancelled) setDupWarn(null);
+   175→   175→      }
+   176→   176→    }, 450);
+   177→   177→    return () => { cancelled = true; clearTimeout(t); };
+   178→   178→  }, [mode, lines, detected, title, type]);
+   179→   179→
+   180→   180→  const reset = () => {
+   181→   181→    setInput(""); setTitle(""); setPosterUrl(""); setDescription("");
+   182→   182→    setYear(""); setGenres(""); setType("video"); setBrand(""); setCountry("");
+   183→   183→    setSecOn(false); setSecSecret(""); setSecParam("token"); setSecType("query"); setSecTtl("300");
+   184→   184→    setM3uText(""); setM3uUrl("");
+   185→   185→    setDupWarn(null); setForceAdd(false);
+   186→   186→  };
+   187→   187→
+   188→   188→  const save = async () => {
+   189→   189→    if (lines.length === 0) {
+   190→   190→      toast({ title: "Introdu cel puțin un link sau cod embed", variant: "destructive" });
+   191→   191→      return;
+   192→   192→    }
+   193→   193→    setSaving(true);
+   194→   194→    try {
+   195→   195→      const bulk = lines.length > 1;
+   196→   196→      // Faza 10 — semnarea se aplică doar în mod singular, pe streamuri directe
+   197→   197→      const direct = detected && ["video", "hls", "dash", "ts"].includes(detected.kind);
+   198→   198→      const signing = secOn && !bulk && direct && secSecret.trim().length >= 4
+   199→   199→        ? { type: secType, param: secParam.trim() || "token", secret: secSecret.trim(), ttlSec: Number(secTtl) || 300 }
+   200→   200→        : undefined;
+   201→   201→      const r = await api.libraryPost<AddResult>({
+   202→   202→        action: "add",
+   203→   203→        items: bulk ? lines : undefined,
+   204→   204→        input: bulk ? undefined : lines[0],
+   205→   205→        title: title.trim() || undefined,
+   206→   206→        posterUrl: posterUrl.trim() || undefined,
+   207→   207→        description: description.trim() || undefined,
+   208→   208→        year: year.trim() || undefined,
+   209→   209→        genres: genres.trim() || undefined,
+   210→   210→        contentType: type,
+   211→   211→        brand: brand || undefined,
+   212→   212→        country: country.trim() || undefined,
+   213→   213→        signing,
+   214→   214→        force: forceAdd || undefined,
+   215→   215→      });
+   216→   216→      const parts = [`${r.added} salvat(e) în Neon ✅`];
+   217→   217→      if (r.duplicates?.length) {
+   218→   218→        const d0 = r.duplicates[0];
+   219→   219→        parts.push(`⚠️ ${r.duplicates.length} BLOCAT(E) — există deja (${REASON_LABEL[d0.reason] || d0.reason}): „${d0.title.slice(0, 48)}”`);
+   220→   220→      }
+   221→   221→      if (r.failed?.length) parts.push(`${r.failed.length} eșuat(e)`);
+   222→   222→      toast({
+   223→   223→        title: parts.join(" • "),
+   224→   224→        description: bulk
+   225→   225→          ? `${lines.length} surse procesate`
+   226→   226→          : r.duplicates?.length
+   227→   227→            ? `⚠️ Acest conținut există deja în bibliotecă (id ${r.duplicates[0].id ?? "?"}) — nu a fost adăugat de 2 ori.`
+   228→   228→            : `${r.items?.[0]?.title || lines[0].slice(0, 50)}`,
+   229→   229→        variant: r.duplicates?.length && r.added === 0 ? "destructive" : undefined,
+   230→   230→      });
+   231→   231→      onAdded(r.items?.[0]);
+   232→   232→      reset();
+   233→   233→      onClose();
+   234→   234→    } catch {
+   235→   235→      toast({ title: "Eroare la salvare în Neon", variant: "destructive" });
+   236→   236→    } finally {
+   237→   237→      setSaving(false);
+   238→   238→    }
+   239→   239→  };
+   240→   240→
+   241→   241→  const importM3U = async () => {
+   242→   242→    if (!m3uText.trim() && !m3uUrl.trim()) {
+   243→   243→      toast({ title: "Lipește conținutul M3U sau introdu un URL de playlist", variant: "destructive" });
+   244→   244→      return;
+   245→   245→    }
+   246→   246→    setImporting(true);
+   247→   247→    try {
+   248→   248→      const r = await api.libraryPost<M3UImportResult>({ action: "m3u", content: m3uText || undefined, url: m3uUrl || undefined });
+   249→   249→      const parts = [`${r.added} canale importate în Neon ✅`];
+   250→   250→      if (r.duplicates) parts.push(`${r.duplicates} duplicate`);
+   251→   251→      if (r.skipped) parts.push(`${r.skipped} ignorate`);
+   252→   252→      toast({
+   253→   253→        title: parts.join(" • "),
+   254→   254→        description: `„${r.playlistName}" — ${r.parsed} canale${r.parsedRadio ? ` (${r.parsedRadio} radio)` : ""}${r.topGroups.length ? ` • grupuri: ${r.topGroups.slice(0, 3).map((g) => g.group).join(", ")}` : ""}`,
+   255→   255→      });
+   256→   256→      onAdded();
+   257→   257→      reset();
+   258→   258→      onClose();
+   259→   259→    } catch {
+   260→   260→      toast({ title: "Eroare la importul M3U — verifică formatul/URL-ul", variant: "destructive" });
+   261→   261→    } finally {
+   262→   262→      setImporting(false);
+   263→   263→    }
+   264→   264→  };
+   265→   265→
+   266→   266→  return (
+   267→   267→    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+   268→   268→      <DialogContent aria-describedby={undefined} className="max-h-[92vh] max-w-lg overflow-y-auto border-zinc-800 bg-zinc-950 text-zinc-100">
+   269→   269→        <DialogHeader>
+   270→   270→          <DialogTitle className="text-lg font-black">Studiul de încărcare universal</DialogTitle>
+   271→   271→        </DialogHeader>
+   272→   272→
+   273→   273→        {/* comutator mod: Surse | Playlist M3U */}
+   274→   274→        <div className="flex rounded-lg bg-zinc-900 p-1 ring-1 ring-zinc-800" role="tablist" aria-label="Mod încărcare">
+   275→   275→          <button
+   276→   276→            role="tab"
+   277→   277→            aria-selected={mode === "sources"}
+   278→   278→            onClick={() => setMode("sources")}
+   279→   279→            className={`flex-1 rounded-md px-3 py-1.5 text-xs font-bold transition ${mode === "sources" ? "bg-red-600 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+   280→   280→          >
+   281→   281→            Linkuri & Embed
+   282→   282→          </button>
+   283→   283→          <button
+   284→   284→            role="tab"
+   285→   285→            aria-selected={mode === "m3u"}
+   286→   286→            onClick={() => setMode("m3u")}
+   287→   287→            className={`flex-1 rounded-md px-3 py-1.5 text-xs font-bold transition ${mode === "m3u" ? "bg-red-600 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+   288→   288→          >
+   289→   289→            Playlist M3U / IPTV
+   290→   290→          </button>
+   291→   291→        </div>
+   292→   292→
+   293→   293→        {mode === "sources" ? (
+   294→   294→          <>
+   295→   295→            <p className="-mt-1 text-xs text-zinc-500">
+   296→   296→              Lipește <b className="text-zinc-300">un element pe linie</b> — link de redare
+   297→   297→              (YouTube, OK.ru, Vimeo, TikTok, Dailymotion, Rumble, Twitch, MP4, HLS, DASH...) sau
+   298→   298→              <b className="text-zinc-300"> cod embed</b> (iframe / script / HTML). Titlul și miniatura
+   299→   299→              reale se extrag automat unde e posibil.
+   300→   300→            </p>
+   301→   301→
+   302→   302→            <textarea
+   303→   303→              value={input}
+   304→   304→              onChange={(e) => setInput(e.target.value)}
+   305→   305→              placeholder={"https://www.youtube.com/watch?v=...\nhttps://ok.ru/video/12345\nhttps://vimeo.com/76979871\n<iframe src=\"https://www.dailymotion.com/embed/video/x8...\"></iframe>\nhttps://example.com/film.mp4\nhttps://stream.tv/live/index.m3u8"}
+   306→   306→              rows={5}
+   307→   307→              className="w-full resize-y rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-red-600/50"
+   308→   308→            />
+   309→   309→
+   310→   310→            {input.trim() && (
+   311→   311→              <div className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs ring-1 ${
+   312→   312→                detectedCount > 0 ? "bg-emerald-500/10 text-emerald-300 ring-emerald-600/30" : "bg-red-500/10 text-red-300 ring-red-600/30"
+   313→   313→              }`}>
+   314→   314→                {detectedCount > 0 ? (
+   315→   315→                  <>
+   316→   316→                    ✓ {detectedCount}/{lines.length} sursă/e detectată/e
+   317→   317→                    {lines.length === 1 && detected && (
+   318→   318→                      <> • <b>{detected.providerLabel}</b> • redare: {detected.kind === "iframe" ? "iframe embed" : detected.kind === "video" ? "player nativ" : detected.kind === "hls" ? "HLS adaptiv" : detected.kind === "dash" ? "DASH adaptiv" : detected.kind === "ts" ? "MPEG-TS (mpegts.js)" : detected.kind === "unplayable" ? `protocol ${detected.protocol.toUpperCase()} — player extern (VLC)` : detected.kind === "html" ? "embed sandboxat" : "iframe generic"}</>
+   319→   319→                    )}
+   320→   320→                    {lines.length > 1 && <span className="text-emerald-400/70">— mod BULK</span>}
+   321→   321→                  </>
+   322→   322→                ) : (
+   323→   323→                  <>✗ Nicio sursă recunoscută — dar poți încerca oricum redarea generică</>
+   324→   324→                )}
+   325→   325→              </div>
+   326→   326→            )}
+   327→   327→
+   328→   328→            {lines.length <= 1 && dupWarn && (
+   329→   329→              <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-200 ring-1 ring-amber-600/40" data-duplicate-alert>
+   330→   330→                <b>⚠️ Există deja în bibliotecă:</b> „{dupWarn.title.slice(0, 60)}” (id {dupWarn.id}) — {REASON_LABEL[dupWarn.reason] || dupWarn.reason}.
+   331→   331→                Salvarea va fi <b>BLOCATĂ</b> — nu se pot încărca două conținuturi la fel.
+   332→   332→                {dupWarn.reason === "title" && (
+   333→   333→                  <label className="mt-1.5 flex items-center gap-2 font-medium text-amber-100">
+   334→   334→                    <input
+   335→   335→                      type="checkbox"
+   336→   336→                      checked={forceAdd}
+   337→   337→                      onChange={(e) => setForceAdd(e.target.checked)}
+   338→   338→                      className="h-3.5 w-3.5 accent-amber-500"
+   339→   339→                    />
+   340→   340→                    Este alt conținut (titlu similar, sursă diferită) — adaugă oricum
+   341→   341→                  </label>
+   342→   342→                )}
+   343→   343→              </div>
+   344→   344→            )}
+   345→   345→
+   346→   346→            {lines.length <= 1 && (
+   347→   347→              <Input
+   348→   348→                value={title}
+   349→   349→                onChange={(e) => setTitle(e.target.value)}
+   350→   350→                placeholder="Titlu (auto din link / oEmbed, opțional editabil)"
+   351→   351→                className="border-zinc-800 bg-zinc-900 text-sm"
+   352→   352→              />
+   353→   353→            )}
+   354→   354→
+   355→   355→            <Input
+   356→   356→              value={posterUrl}
+   357→   357→              onChange={(e) => setPosterUrl(e.target.value)}
+   358→   358→              placeholder="URL poster (opțional — altfel miniatură automată)"
+   359→   359→              className="border-zinc-800 bg-zinc-900 text-sm"
+   360→   360→            />
+   361→   361→
+   362→   362→            <textarea
+   363→   363→              value={description}
+   364→   364→              onChange={(e) => setDescription(e.target.value)}
+   365→   365→              placeholder="Descriere (opțional)"
+   366→   366→              rows={2}
+   367→   367→              className="w-full resize-none rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-red-600/50"
+   368→   368→            />
+   369→   369→
+   370→   370→            <div className="grid grid-cols-2 gap-2">
+   371→   371→              <select
+   372→   372→                value={type}
+   373→   373→                onChange={(e) => setType(e.target.value)}
+   374→   374→                aria-label="Tip conținut"
+   375→   375→                className="h-9 rounded-lg border border-zinc-800 bg-zinc-900 px-2 text-sm text-zinc-200"
+   376→   376→              >
+   377→   377→                {TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+   378→   378→              </select>
+   379→   379→              <select
+   380→   380→                value={brand}
+   381→   381→                onChange={(e) => setBrand(e.target.value)}
+   382→   382→                aria-label="Brand / univers"
+   383→   383→                className="h-9 rounded-lg border border-zinc-800 bg-zinc-900 px-2 text-sm text-zinc-200"
+   384→   384→              >
+   385→   385→                {BRANDS.map((b) => <option key={b || "none"} value={b}>{b ? b.replace(/-/g, " ") : "— fără brand —"}</option>)}
+   386→   386→              </select>
+   387→   387→            </div>
+   388→   388→
+   389→   389→            <div className="grid grid-cols-3 gap-2">
+   390→   390→              <Input
+   391→   391→                value={year}
+   392→   392→                onChange={(e) => setYear(e.target.value.replace(/\D/g, "").slice(0, 4))}
+   393→   393→                placeholder="An (ex: 2024)"
+   394→   394→                className="border-zinc-800 bg-zinc-900 text-sm"
+   395→   395→              />
+   396→   396→              <Input
+   397→   397→                value={country}
+   398→   398→                onChange={(e) => setCountry(e.target.value)}
+   399→   399→                placeholder="Țară"
+   400→   400→                className="border-zinc-800 bg-zinc-900 text-sm"
+   401→   401→              />
+   402→   402→              <Input
+   403→   403→                value={genres}
+   404→   404→                onChange={(e) => setGenres(e.target.value)}
+   405→   405→                placeholder="Genuri (virgulă)"
+   406→   406→                className="border-zinc-800 bg-zinc-900 text-sm"
+   407→   407→              />
+   408→   408→            </div>
+   409→   409→
+   410→   410→            {/* ---------- FAZA 10: ACCES SECURIZAT (token/HMAC/JWT) ---------- */}
+   411→   411→            {lines.length <= 1 && (
+   412→   412→              <details className="rounded-lg border border-zinc-800 bg-zinc-900/60" open={secOn}>
+   413→   413→                <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-xs font-bold text-zinc-300">
+   414→   414→                  <span>🔐 Acces securizat (token / HMAC / JWT)</span>
+   415→   415→                  <button
+   416→   416→                    type="button"
+   417→   417→                    aria-label="Comută semnarea"
+   418→   418→                    onClick={(e) => { e.preventDefault(); setSecOn((v) => !v); }}
+   419→   419→                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${secOn ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400"}`}
+   420→   420→                  >
+   421→   421→                    {secOn ? "ACTIV" : "OFF"}
+   422→   422→                  </button>
+   423→   423→                </summary>
+   424→   424→                {secOn && (
+   425→   425→                  <div className="space-y-2 px-3 pb-3">
+   426→   426→                    <p className="text-[11px] leading-relaxed text-zinc-500">
+   427→   427→                      Pentru streamuri directe protejate (MP4/HLS/DASH/MPEG-TS). Secretul se salvează
+   428→   428→                      în Neon și NU ajunge niciodată în browser — la redare, serverul semnează URL-ul.
+   429→   429→                    </p>
+   430→   430→                    <div className="grid grid-cols-2 gap-2">
+   431→   431→                      <select
+   432→   432→                        value={secType}
+   433→   433→                        onChange={(e) => setSecType(e.target.value)}
+   434→   434→                        aria-label="Schema de semnare"
+   435→   435→                        className="h-9 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-200"
+   436→   436→                      >
+   437→   437→                        <option value="query">Query token (?token=secret)</option>
+   438→   438→                        <option value="hmac-md5">HMAC-MD5 (Wowza/Flussonic)</option>
+   439→   439→                        <option value="hmac-sha256">HMAC-SHA256</option>
+   440→   440→                        <option value="jwt">JWT HS256</option>
+   441→   441→                      </select>
+   442→   442→                      <Input
+   443→   443→                        value={secParam}
+   444→   444→                        onChange={(e) => setSecParam(e.target.value)}
+   445→   445→                        placeholder="Parametru (token / st / auth)"
+   446→   446→                        className="h-9 border-zinc-800 bg-zinc-950 text-xs"
+   447→   447→                      />
+   448→   448→                    </div>
+   449→   449→                    <div className="grid grid-cols-2 gap-2">
+   450→   450→                      <Input
+   451→   451→                        type="password"
+   452→   452→                        value={secSecret}
+   453→   453→                        onChange={(e) => setSecSecret(e.target.value)}
+   454→   454→                        placeholder="Secret (min. 4 caractere)"
+   455→   455→                        className="h-9 border-zinc-800 bg-zinc-950 text-xs"
+   456→   456→                      />
+   457→   457→                      <Input
+   458→   458→                        value={secTtl}
+   459→   459→                        onChange={(e) => setSecTtl(e.target.value.replace(/\D/g, "").slice(0, 6))}
+   460→   460→                        placeholder="TTL secunde (300)"
+   461→   461→                        className="h-9 border-zinc-800 bg-zinc-950 text-xs"
+   462→   462→                      />
+   463→   463→                    </div>
+   464→   464→                  </div>
+   465→   465→                )}
+   466→   466→              </details>
+   467→   467→            )}
+   468→   468→
+   469→   469→            <div className="flex gap-2">
+   470→   470→              <button
+   471→   471→                onClick={save}
+   472→   472→                disabled={saving}
+   473→   473→                className="flex-1 rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white hover:bg-red-500 disabled:opacity-50 transition"
+   474→   474→              >
+   475→   475→                {saving
+   476→   476→                  ? "Se salvează în Neon..."
+   477→   477→                  : lines.length > 1
+   478→   478→                    ? `Salvează ${lines.length} conținuturi în biblioteca Neon`
+   479→   479→                    : "Salvează în biblioteca Neon"}
+   480→   480→              </button>
+   481→   481→              <button
+   482→   482→                onClick={reset}
+   483→   483→                className="rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-zinc-300 ring-1 ring-zinc-800 hover:bg-zinc-800 transition"
+   484→   484→              >
+   485→   485→                Curăță
+   486→   486→              </button>
+   487→   487→            </div>
+   488→   488→            <p className="text-[11px] text-zinc-600">
+   489→   489→              Sfat: orice sursă web poate fi redată — providerii necunoscuți primesc iframe generic cu
+   490→   490→              fallback extern. MPEG-TS (.ts) se redă prin mpegts.js; SRT/RTMP/UDP primesc instrucțiuni
+   491→   491→              de restream + copiere URL. Aceleași linkuri adăugate repetat nu se dublează (idempotent).
+   492→   492→            </p>
+   493→   493→          </>
+   494→   494→        ) : (
+   495→   495→          <>
+   496→   496→            <p className="-mt-1 text-xs text-zinc-500">
+   497→   497→              Importă un <b className="text-zinc-300">playlist M3U / M3U8</b> (IPTV, canale TV, radio):
+   498→   498→              lipește conținutul sau dă un URL de playlist. Se citesc automat <b className="text-zinc-300">tvg-logo</b>,
+   499→   499→              <b className="text-zinc-300"> group-title</b> (categorii multiple separate prin „;”), calitatea
+   500→   500→              (ex: 1080p) și steagurile [Geo-blocked] / [Not 24/7]. Importul e idempotent — re-importul
+   501→   501→              aceluiași playlist nu se dublează.
+   502→   502→            </p>
+   503→   503→
+   504→   504→            <Input
+   505→   505→              value={m3uUrl}
+   506→   506→              onChange={(e) => setM3uUrl(e.target.value)}
+   507→   507→              placeholder="URL playlist (opțional, ex: https://exemplu.tv/playlist.m3u)"
+   508→   508→              className="border-zinc-800 bg-zinc-900 font-mono text-xs"
+   509→   509→            />
+   510→   510→
+   511→   511→            <textarea
+   512→   512→              value={m3uText}
+   513→   513→              onChange={(e) => setM3uText(e.target.value)}
+   514→   514→              placeholder={"#EXTM3U\n#PLAYLIST:Canalele mele\n#EXTINF:-1 tvg-id=\"Canal.ro\" tvg-logo=\"https://.../logo.png\" group-title=\"Știri;RO;Generalist\",Canalul Meu (1080p)\nhttps://stream.exemplu.tv/live/index.m3u8"}
+   515→   515→              rows={7}
+   516→   516→              className="w-full resize-y rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-red-600/50"
+   517→   517→            />
+   518→   518→
+   519→   519→            {m3uPreview && (
+   520→   520→              <div className={`rounded-lg px-3 py-2 text-xs ring-1 ${
+   521→   521→                m3uPreview.channels > 0
+   522→   522→                  ? "bg-emerald-500/10 text-emerald-300 ring-emerald-600/30"
+   523→   523→                  : "bg-red-500/10 text-red-300 ring-red-600/30"
+   524→   524→              }`}>
+   525→   525→                {m3uPreview.channels > 0 ? (
+   526→   526→                  <div className="space-y-1">
+   527→   527→                    <div>
+   528→   528→                      ✓ <b>{m3uPreview.channels}</b> canale detectate{m3uPreview.radio > 0 && <> • <b>{m3uPreview.radio}</b> radio</>}
+   529→   529→                      {m3uPreview.playlistName && <> • playlist „{m3uPreview.playlistName}"</>}
+   530→   530→                    </div>
+   531→   531→                    {m3uPreview.topGroups.length > 0 && (
+   532→   532→                      <div className="text-emerald-400/80">
+   533→   533→                        Grupuri: {m3uPreview.topGroups.map(([g, n]) => `${g} (${n})`).join(" • ")}
+   534→   534→                      </div>
+   535→   535→                    )}
+   536→   536→                    {m3uPreview.sample.length > 0 && (
+   537→   537→                      <div className="truncate text-emerald-400/60">Ex: {m3uPreview.sample.join(" • ")}</div>
+   538→   538→                    )}
+   539→   539→                  </div>
+   540→   540→                ) : (
+   541→   541→                  <>{m3uPreview.errors[0] || "Niciun canal detectat — verifică formatul"}</>
+   542→   542→                )}
+   543→   543→              </div>
+   544→   544→            )}
+   545→   545→
+   546→   546→            <div className="flex gap-2">
+   547→   547→              <button
+   548→   548→                onClick={importM3U}
+   549→   549→                disabled={importing}
+   550→   550→                className="flex-1 rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white hover:bg-red-500 disabled:opacity-50 transition"
+   551→   551→              >
+   552→   552→                {importing
+   553→   553→                  ? "Se importă în Neon..."
+   554→   554→                  : m3uPreview && m3uPreview.channels > 0
+   555→   555→                    ? `Importă ${m3uPreview.channels} canale în biblioteca Neon`
+   556→   556→                    : "Importă playlist în biblioteca Neon"}
+   557→   557→              </button>
+   558→   558→              <button
+   559→   559→                onClick={reset}
+   560→   560→                className="rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-zinc-300 ring-1 ring-zinc-800 hover:bg-zinc-800 transition"
+   561→   561→              >
+   562→   562→                Curăță
+   563→   563→              </button>
+   564→   564→            </div>
+   565→   565→            <p className="text-[11px] text-zinc-600">
+   566→   566→              Limită: 20.000 canale per import (playlisturi mari — împarte-le). Canalele apar instant în
+   567→   567→              meniurile TV Live / Radio, în căutare și în AI. Grupurile devin categorii filtrabile.
+   568→   568→            </p>
+   569→   569→          </>
+   570→   570→        )}
+   571→   571→      </DialogContent>
+   572→   572→    </Dialog>
+   573→   573→  );
+   574→   574→}
+   575→   575→
